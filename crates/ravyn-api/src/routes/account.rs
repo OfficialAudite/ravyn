@@ -355,6 +355,7 @@ pub struct AdminUserSummary {
     created_at: OffsetDateTime,
     storage_used_bytes: i64,
     max_storage_bytes: Option<i64>,
+    file_count: i64,
 }
 
 /// Every account on the instance with its current storage usage — an
@@ -379,6 +380,7 @@ pub async fn list_users(AuthedUser(user): AuthedUser, State(state): State<AppSta
     for u in users {
         let storage_used_bytes = state.db.get_storage_usage(u.id).await.unwrap_or(0);
         let max_storage_bytes = state.db.get_max_storage_bytes(u.id).await.unwrap_or(None);
+        let file_count = state.db.count_files_for_owner(u.id).await.unwrap_or(0);
         summaries.push(AdminUserSummary {
             id: u.id.0,
             username: u.username,
@@ -386,6 +388,7 @@ pub async fn list_users(AuthedUser(user): AuthedUser, State(state): State<AppSta
             created_at: u.created_at,
             storage_used_bytes,
             max_storage_bytes,
+            file_count,
         });
     }
 
@@ -417,6 +420,130 @@ pub async fn set_user_limit(
     }
 
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Buckets a content type the same way the browse page's type filter does
+/// (`TypeFilter` in `crates/ravyn-web/src/dashboard.rs`) — kept as a small
+/// duplicate here rather than a shared crate, since it's four lines and the
+/// two call sites (a filter predicate, a stats tally) want it in different
+/// shapes anyway.
+#[derive(Default, Serialize)]
+struct TypeCounts {
+    images: i64,
+    videos: i64,
+    audio: i64,
+    documents: i64,
+    other: i64,
+}
+
+impl TypeCounts {
+    fn add(&mut self, content_type: &str) {
+        if content_type.starts_with("image/") {
+            self.images += 1;
+        } else if content_type.starts_with("video/") {
+            self.videos += 1;
+        } else if content_type.starts_with("audio/") {
+            self.audio += 1;
+        } else if content_type == "application/pdf" || content_type.starts_with("text/") {
+            self.documents += 1;
+        } else {
+            self.other += 1;
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct MyStats {
+    file_count: i64,
+    storage_used_bytes: i64,
+    max_storage_bytes: Option<i64>,
+    #[serde(flatten)]
+    by_type: TypeCounts,
+}
+
+/// Every user's own view of their usage — unlike `list_users`, open to
+/// anyone, not just an admin.
+pub async fn my_stats(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {
+    let files = match state.db.list_files_for_owner(user.id).await {
+        Ok(files) => files,
+        Err(err) => {
+            tracing::error!(%err, "failed to list files for stats");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let max_storage_bytes = state
+        .db
+        .get_max_storage_bytes(user.id)
+        .await
+        .unwrap_or(None);
+
+    let mut by_type = TypeCounts::default();
+    let mut storage_used_bytes = 0i64;
+    for file in &files {
+        storage_used_bytes += file.size_bytes as i64;
+        by_type.add(&file.content_type);
+    }
+
+    Json(MyStats {
+        file_count: files.len() as i64,
+        storage_used_bytes,
+        max_storage_bytes,
+        by_type,
+    })
+    .into_response()
+}
+
+#[derive(Serialize)]
+pub struct InstanceStats {
+    total_users: i64,
+    total_files: i64,
+    total_storage_bytes: i64,
+    #[serde(flatten)]
+    by_type: TypeCounts,
+}
+
+/// The instance-wide counterpart to `my_stats` — every user's usage summed
+/// together, admin only. Reuses `list_files_for_owner` per user rather than
+/// a new "every file regardless of owner" query, for the same reason
+/// `list_users` already does N+1 queries for the per-user list: at
+/// self-hosted scale it's simpler than it is slow.
+pub async fn admin_stats(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let users = match state.db.list_users().await {
+        Ok(users) => users,
+        Err(err) => {
+            tracing::error!(%err, "failed to list users for stats");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let mut by_type = TypeCounts::default();
+    let mut total_files = 0i64;
+    let mut total_storage_bytes = 0i64;
+
+    for u in &users {
+        let files = state
+            .db
+            .list_files_for_owner(u.id)
+            .await
+            .unwrap_or_default();
+        total_files += files.len() as i64;
+        for file in &files {
+            total_storage_bytes += file.size_bytes as i64;
+            by_type.add(&file.content_type);
+        }
+    }
+
+    Json(InstanceStats {
+        total_users: users.len() as i64,
+        total_files,
+        total_storage_bytes,
+        by_type,
+    })
+    .into_response()
 }
 
 #[derive(Deserialize)]

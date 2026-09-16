@@ -1047,6 +1047,49 @@ input[type="color"] {
   }
 }
 
+/* stats -------------------------------------------------------------------- */
+
+.stats-grid {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+
+.stat-card {
+  flex: 1;
+  min-width: 130px;
+  background: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1rem;
+}
+
+.stat-value {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 700;
+  background: var(--sheen);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  line-height: 1.2;
+}
+
+.stat-label {
+  font-size: 0.72rem;
+  color: var(--fog);
+  margin-top: 0.2rem;
+}
+
+.stats-breakdown {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fog);
+  margin: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;

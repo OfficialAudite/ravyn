@@ -474,6 +474,7 @@ pub struct AdminUserInfo {
     pub created_at: String,
     pub storage_used_bytes: i64,
     pub max_storage_bytes: Option<i64>,
+    pub file_count: i64,
 }
 
 #[server]
@@ -525,4 +526,81 @@ pub async fn set_user_limit(
     }
 
     Ok(())
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TypeCounts {
+    pub images: i64,
+    pub videos: i64,
+    pub audio: i64,
+    pub documents: i64,
+    pub other: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MyStats {
+    pub file_count: i64,
+    pub storage_used_bytes: i64,
+    pub max_storage_bytes: Option<i64>,
+    #[serde(flatten)]
+    pub by_type: TypeCounts,
+}
+
+#[server]
+pub async fn get_my_stats() -> Result<MyStats, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/me/stats", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("not authenticated"));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InstanceStats {
+    pub total_users: i64,
+    pub total_files: i64,
+    pub total_storage_bytes: i64,
+    #[serde(flatten)]
+    pub by_type: TypeCounts,
+}
+
+#[server]
+pub async fn get_admin_stats() -> Result<InstanceStats, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/stats", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("not authorized"));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }

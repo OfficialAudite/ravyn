@@ -122,6 +122,16 @@ counter, since a self-hosted instance's file count stays small enough that this 
 cheap and it can never drift — and rejects with `507 Insufficient Storage` if the
 upload would exceed it.
 
+### Stats
+
+Every user sees their own usage in `/settings` (`GET /me/stats`): storage used
+against their quota (or "unlimited"), total files, and a breakdown by type
+(images/videos/audio/documents/other). An admin additionally sees the same shape
+summed across the whole instance (`GET /admin/stats`) — total users, total files,
+total storage, and the instance-wide type breakdown. Both reuse the existing
+per-owner file list rather than a new aggregate query or any kind of stored
+counter, for the same reason the quota check does.
+
 ## Embeds (Discord, Slack, Twitter)
 
 Every share link already works as a direct image/video link — paste one in Discord

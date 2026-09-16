@@ -77,6 +77,15 @@ impl Db {
         Ok(rows.into_iter().map(File::from).collect())
     }
 
+    pub async fn count_files_for_owner(&self, owner_id: UserId) -> Result<i64, DbError> {
+        let count: i64 = sqlx::query_scalar("select count(*) from files where owner_id = $1")
+            .bind(owner_id.0)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(count)
+    }
+
     pub async fn list_files_for_folder(&self, folder_id: FolderId) -> Result<Vec<File>, DbError> {
         let rows = sqlx::query_as::<_, FileRow>(
             "select * from files where folder_id = $1 order by created_at desc",

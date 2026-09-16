@@ -35,6 +35,7 @@ pub fn router(state: AppState) -> Router {
         .route("/register", post(account::register))
         .route("/registration-status", get(account::registration_status))
         .route("/me", get(account::me))
+        .route("/me/stats", get(account::my_stats))
         .route("/api-tokens", post(account::create_api_token))
         .route("/api-tokens", get(account::list_api_tokens))
         .route("/api-tokens/{id}", delete(account::delete_api_token))
@@ -48,6 +49,7 @@ pub fn router(state: AppState) -> Router {
         .route("/invites/{id}", delete(account::delete_invite))
         .route("/admin/users", get(account::list_users))
         .route("/admin/users/{id}/limit", put(account::set_user_limit))
+        .route("/admin/stats", get(account::admin_stats))
         .route("/v/{id}", get(view::view_file))
         .with_state(state)
 }

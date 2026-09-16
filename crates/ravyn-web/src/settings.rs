@@ -3,10 +3,10 @@ use leptos::prelude::*;
 use crate::format::{format_date, format_size};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_embed_settings, get_instance_settings, get_storage_info, list_api_tokens, list_invites,
-    list_users, me, AdminUserInfo, ApiTokenInfo, CreateApiToken, CreateInvite, DeleteApiToken,
-    DeleteInvite, EmbedSettings, InstanceSettings, InviteInfo, SetEmbedSettings,
-    SetInstanceSettings, SetUserLimit,
+    get_admin_stats, get_embed_settings, get_instance_settings, get_my_stats, get_storage_info,
+    list_api_tokens, list_invites, list_users, me, AdminUserInfo, ApiTokenInfo, CreateApiToken,
+    CreateInvite, DeleteApiToken, DeleteInvite, EmbedSettings, InstanceSettings, InviteInfo,
+    SetEmbedSettings, SetInstanceSettings, SetUserLimit, TypeCounts,
 };
 
 #[component]
@@ -16,10 +16,69 @@ pub fn SettingsPage() -> impl IntoView {
             <h2>"settings"</h2>
         </div>
         <AccountSection/>
+        <MyStatsSection/>
         <ApiTokensSection/>
         <EmbedSection/>
         <StorageSection/>
         <AdminSection/>
+    }
+}
+
+/// Renders the `images · videos · audio · documents · other` line shared by
+/// a user's own stats and the instance-wide overview.
+fn type_breakdown_line(by_type: &TypeCounts) -> impl IntoView {
+    view! {
+        <p class="stats-breakdown">
+            {by_type.images} " images · " {by_type.videos} " videos · " {by_type.audio}
+            " audio · " {by_type.documents} " documents · " {by_type.other} " other"
+        </p>
+    }
+}
+
+#[component]
+fn MyStatsSection() -> impl IntoView {
+    let stats = Resource::new(|| (), |_| get_my_stats());
+
+    view! {
+        <div class="settings-section">
+            <h3>"your stats"</h3>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    stats
+                        .get()
+                        .map(|result| match result {
+                            Ok(stats) => {
+                                let limit_label = match stats.max_storage_bytes {
+                                    Some(bytes) => {
+                                        format!("of {}", format_size(bytes.max(0) as u64))
+                                    }
+                                    None => "unlimited".to_string(),
+                                };
+                                view! {
+                                    <div class="stats-grid">
+                                        <div class="stat-card">
+                                            <span class="stat-value">
+                                                {format_size(stats.storage_used_bytes.max(0) as u64)}
+                                            </span>
+                                            <p class="stat-label">{limit_label}</p>
+                                        </div>
+                                        <div class="stat-card">
+                                            <span class="stat-value">{stats.file_count}</span>
+                                            <p class="stat-label">"files"</p>
+                                        </div>
+                                    </div>
+                                    {type_breakdown_line(&stats.by_type)}
+                                }
+                                    .into_any()
+                            }
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load your stats"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
     }
 }
 
@@ -53,6 +112,7 @@ fn AdminControls() -> impl IntoView {
     );
 
     view! {
+        <InstanceStatsSection/>
         <div class="settings-section">
             <h3>"admin"</h3>
             <p class="settings-hint">
@@ -78,6 +138,51 @@ fn AdminControls() -> impl IntoView {
             </Suspense>
         </div>
         <UsersSection/>
+    }
+}
+
+#[component]
+fn InstanceStatsSection() -> impl IntoView {
+    let stats = Resource::new(|| (), |_| get_admin_stats());
+
+    view! {
+        <div class="settings-section">
+            <h3>"instance stats"</h3>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    stats
+                        .get()
+                        .map(|result| match result {
+                            Ok(stats) => {
+                                view! {
+                                    <div class="stats-grid">
+                                        <div class="stat-card">
+                                            <span class="stat-value">{stats.total_users}</span>
+                                            <p class="stat-label">"users"</p>
+                                        </div>
+                                        <div class="stat-card">
+                                            <span class="stat-value">{stats.total_files}</span>
+                                            <p class="stat-label">"files"</p>
+                                        </div>
+                                        <div class="stat-card">
+                                            <span class="stat-value">
+                                                {format_size(stats.total_storage_bytes.max(0) as u64)}
+                                            </span>
+                                            <p class="stat-label">"total storage"</p>
+                                        </div>
+                                    </div>
+                                    {type_breakdown_line(&stats.by_type)}
+                                }
+                                    .into_any()
+                            }
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load instance stats"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
     }
 }
 
@@ -291,7 +396,9 @@ fn UserRow(info: AdminUserInfo, limit_action: ServerAction<SetUserLimit>) -> imp
                     {info.username.clone()}
                     {info.is_admin.then_some(" · admin")}
                 </p>
-                <p class="file-sub">{used} " used of " {limit_display}</p>
+                <p class="file-sub">
+                    {used} " used of " {limit_display} " · " {info.file_count} " files"
+                </p>
             </div>
             <div class="user-row-actions">
                 <form
