@@ -20,3 +20,19 @@ pub fn format_size(bytes: u64) -> String {
 pub fn format_date(rfc3339: &str) -> &str {
     rfc3339.get(0..10).unwrap_or(rfc3339)
 }
+
+/// The `128 images · 12 videos · ...` line shared by a user's own stats and
+/// the instance-wide admin overview — plain string building here rather
+/// than a shared view-returning helper, so this file stays free of any
+/// dependency on Leptos or on the shape of either caller's stats struct.
+pub fn format_type_breakdown(
+    images: i64,
+    videos: i64,
+    audio: i64,
+    documents: i64,
+    other: i64,
+) -> String {
+    format!(
+        "{images} images · {videos} videos · {audio} audio · {documents} documents · {other} other"
+    )
+}

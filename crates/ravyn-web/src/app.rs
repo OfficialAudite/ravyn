@@ -5,6 +5,7 @@ use leptos_router::{
     ParamSegment, StaticSegment,
 };
 
+use crate::admin::AdminPage;
 use crate::dashboard::{BrowsePage, DashboardLayout, UploadPage};
 use crate::register::RegisterPage;
 use crate::settings::SettingsPage;
@@ -46,6 +47,7 @@ pub fn App() -> impl IntoView {
                     <Route path=StaticSegment("") view=BrowsePage/>
                     <Route path=StaticSegment("upload") view=UploadPage/>
                     <Route path=StaticSegment("settings") view=SettingsPage/>
+                    <Route path=StaticSegment("admin") view=AdminPage/>
                 </ParentRoute>
                 <Route path=(StaticSegment("f"), ParamSegment("id")) view=SharedFolderPage/>
                 <Route path=StaticSegment("register") view=RegisterPage/>

@@ -78,14 +78,13 @@ that domain no matter which backend is storing the bytes.
 
 The first account created — via the web UI at `/register`, or via the CLI below —
 automatically becomes the instance's admin. Everyone after that is gated by whatever
-registration mode the admin sets from `/settings` (`RegistrationMode` in
-`ravyn-core`):
+registration mode the admin sets from `/admin` (`RegistrationMode` in `ravyn-core`):
 
 - **closed** (default) — no self-service registration; accounts only via the CLI or
   an admin-issued invite.
 - **open** — anyone who can reach the server can create an account.
 - **invite** — registering requires a single-use invite code, generated from
-  `/settings` by an admin.
+  `/admin` by an admin.
 
 ```sh
 DATABASE_URL=postgres://localhost/ravyn cargo run -p ravyn-api -- create-user alice hunter2
@@ -114,8 +113,8 @@ headless setup) — replace `YOUR_API_TOKEN` there yourself.
 
 ### Per-user storage quotas
 
-`/settings` shows an admin every account on the instance with its current storage
-usage, and a field to set (or clear) a per-user cap in MB (`users.max_storage_bytes`,
+`/admin` shows every account on the instance with its current storage usage, and a
+field to set (or clear) a per-user cap in MB (`users.max_storage_bytes`,
 `NULL` = unlimited). `POST /files` checks the owner's cap against their current usage
 — summed fresh from `files.size_bytes` on every upload rather than kept as a running
 counter, since a self-hosted instance's file count stays small enough that this is
@@ -127,10 +126,10 @@ upload would exceed it.
 Every user sees their own usage in `/settings` (`GET /me/stats`): storage used
 against their quota (or "unlimited"), total files, and a breakdown by type
 (images/videos/audio/documents/other). An admin additionally sees the same shape
-summed across the whole instance (`GET /admin/stats`) — total users, total files,
-total storage, and the instance-wide type breakdown. Both reuse the existing
-per-owner file list rather than a new aggregate query or any kind of stored
-counter, for the same reason the quota check does.
+summed across the whole instance in `/admin` (`GET /admin/stats`) — total users,
+total files, total storage, and the instance-wide type breakdown. Both reuse the
+existing per-owner file list rather than a new aggregate query or any kind of
+stored counter, for the same reason the quota check does.
 
 ## Embeds (Discord, Slack, Twitter)
 
@@ -182,26 +181,27 @@ everything else per-owner.
 
 ## Web UI pages
 
-The logged-in app is three pages under a shared layout (`DashboardLayout` in
+The logged-in app is four pages under a shared layout (`DashboardLayout` in
 `crates/ravyn-web/src/dashboard.rs`, using nested Leptos routes with an `<Outlet/>`):
 
 - `/` — browse: folder sidebar, search/type/sort filters, the file grid.
 - `/upload` — just the dropzone.
-- `/settings` — account info, API token management (create/list/revoke — the token
-  create endpoint used to be dashboard-only and had no way to see or revoke a token
-  afterwards), a read-only storage backend summary, and — for an admin — registration
-  mode and invite codes.
+- `/settings` — tabbed: **general** (account info + your own storage/file stats),
+  **api tokens**, **embeds**, **storage** (read-only backend summary).
+- `/admin` — instance-wide config, visible only to an admin (`crates/ravyn-web/src/admin.rs`,
+  a "admin" nav link appears automatically for one). Also tabbed: **general**
+  (instance-wide stats + registration mode + invite codes), **users** (every account,
+  their usage, and their storage limit).
 
-All three share one set of file/folder resources and mutation actions via
+All four share one set of file/folder resources and mutation actions via
 `provide_context`/`expect_context`, so an action taken on one page (say, deleting a
 file) is reflected everywhere without a separate fetch per page. `/f/{id}` (the public
 shared-folder view) stays a sibling top-level route, outside this layout, since it's
 usable without logging in at all.
 
 Multiple users are supported — every file/folder is scoped to its owner, and an
-admin controls from `/settings` whether anyone else can register (see
-[Auth](#auth)). There's no shared/team view of another user's files; each account's
-hoard is its own.
+admin controls from `/admin` whether anyone else can register (see [Auth](#auth)).
+There's no shared/team view of another user's files; each account's hoard is its own.
 
 ## Docker
 

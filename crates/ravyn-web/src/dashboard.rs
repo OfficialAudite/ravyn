@@ -8,8 +8,8 @@ use crate::icons::{
     LockIcon, PlusIcon, RavenIcon, SearchIcon, TrashIcon,
 };
 use crate::server_fns::{
-    get_registration_status, list_files, list_folders, CreateFolder, DeleteFile, DeleteFolder,
-    FileSummary, FolderSummary, Login, Logout, MoveFileToFolder, SetFilePassword,
+    get_registration_status, list_files, list_folders, me, AccountInfo, CreateFolder, DeleteFile,
+    DeleteFolder, FileSummary, FolderSummary, Login, Logout, MoveFileToFolder, SetFilePassword,
     SetFolderPassword,
 };
 
@@ -125,6 +125,25 @@ pub struct DashboardContext {
     /// open across an edit made through its own controls without needing
     /// to change how or when the rest of the page re-renders.
     pub opened_file: RwSignal<Option<String>>,
+    /// Fetched once here, alongside `files`/`folders` — not by `TopNav`
+    /// itself, even though it's the only thing that reads it, so its fetch
+    /// doesn't restart every time `<main>` rebuilds (see `opened_file`
+    /// above for why that happens on every file/folder mutation). This
+    /// alone doesn't make `TopNav`'s use of it perfectly clean: `<main>`,
+    /// and the `<Suspense>` around this resource's read inside `TopNav`,
+    /// still get torn down and recreated on the same mutations, and that
+    /// occasionally logs a harmless wasm "closure invoked ... after being
+    /// dropped" to the console (confirmed by testing: it never affects
+    /// what actually renders). Removing that `<Suspense>` looks tempting —
+    /// don't: without it, the client's first frame can transiently read
+    /// this resource as unresolved before the server's already-resolved
+    /// render catches up, which mismatches hydration for real and produces
+    /// an actual crash, not just a log line. Properly fixing the underlying
+    /// `<main>`-rebuilds-on-every-mutation issue is the real fix, but two
+    /// earlier attempts at that (a `Memo` gate, a second gating resource)
+    /// each made hydration fail far worse — left alone here as the smaller
+    /// of the known evils.
+    pub account: Resource<Result<AccountInfo, ServerFnError>>,
 }
 
 /// The shared shell for the logged-in app: gates everything behind login,
@@ -158,12 +177,21 @@ pub fn DashboardLayout() -> impl IntoView {
 
     let files = Resource::new(refresh_key, |_| list_files());
     let folders = Resource::new(refresh_key, |_| list_folders());
+    // Keyed on `refresh_key`, not `|| ()`: fetched once at mount it would
+    // run before login (no session cookie yet), cache that `Err`, and never
+    // refetch — the admin nav link would then never appear until a full
+    // page reload created a fresh `DashboardLayout` (and thus a fresh
+    // resource) with the cookie already in place. Refetching alongside
+    // `files`/`folders` on every login keeps it in sync with who's
+    // actually signed in.
+    let account = Resource::new(refresh_key, |_| me());
 
     provide_context(DashboardContext {
         actions,
         files,
         folders,
         opened_file: RwSignal::new(None),
+        account,
     });
 
     view! {
@@ -190,6 +218,8 @@ pub fn DashboardLayout() -> impl IntoView {
 
 #[component]
 fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
+    let account = expect_context::<DashboardContext>().account;
+
     view! {
         <div class="topbar">
             <span class="wordmark">"ravyn"</span>
@@ -199,6 +229,18 @@ fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
                 </A>
                 <A href="/upload">"upload"</A>
                 <A href="/settings">"settings"</A>
+                <Suspense fallback=|| ()>
+                    {move || {
+                        account
+                            .get()
+                            .map(|result| match result {
+                                Ok(info) if info.is_admin => {
+                                    view! { <A href="/admin">"admin"</A> }.into_any()
+                                }
+                                _ => ().into_any(),
+                            })
+                    }}
+                </Suspense>
             </nav>
             <button
                 class="btn btn-ghost"
