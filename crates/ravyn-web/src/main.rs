@@ -5,12 +5,14 @@
 #[tokio::main]
 async fn main() {
     use axum::{
+        http::header::{HeaderValue, CACHE_CONTROL},
         routing::{get, post},
         Router,
     };
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use ravyn_web::app::{shell, App};
+    use tower_http::set_header::SetResponseHeaderLayer;
 
     tracing_subscriber::fmt::init();
 
@@ -31,6 +33,10 @@ async fn main() {
             move || shell(leptos_options.clone())
         })
         .fallback(leptos_axum::file_and_error_handler(shell))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ))
         .with_state(leptos_options);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();

@@ -18,14 +18,28 @@ pub struct FileSummary {
     pub folder_id: Option<String>,
     pub has_password: bool,
     pub created_at: String,
-    /// The publicly-reachable download URL, e.g. `http://localhost:3000/files/<id>`.
-    /// Deliberately not `/api/files/<id>` on `ravyn-web`'s own origin — that
-    /// path is where Leptos mounts server functions, so it would collide.
+    /// The shareable link, e.g. `http://localhost:3000/v/<id>` — copy-link
+    /// and "open" both use this. It's `ravyn-api`'s `/v/{id}`, not the raw
+    /// `/files/{id}`: when the owner has embeds off it just redirects
+    /// straight to the raw file (so Discord/etc. preview it exactly as
+    /// before), and when embeds are on it's the page that actually carries
+    /// the Open Graph tags — a raw file URL has nowhere to put those.
+    /// Deliberately not `/api/v/<id>` on `ravyn-web`'s own origin either —
+    /// that prefix is where Leptos mounts server functions.
     pub url: String,
     /// A small local-disk preview URL. Only meaningful for images — for
     /// anything else, or if generation failed, this 404s and the UI falls
     /// back to a file-type icon.
     pub thumbnail_url: String,
+    /// The original bytes, straight from `ravyn-api`'s `/files/{id}` —
+    /// what the file detail modal plays/displays inline. Unlike
+    /// `thumbnail_url` this is never proxied through `ravyn-web`: images are
+    /// small enough to fetch directly, and proxying video/audio would mean
+    /// buffering the whole file in `ravyn-web`'s memory and losing native
+    /// range-request scrubbing. A password-protected file's own owner will
+    /// hit the password gate here too, same as opening `url` directly does
+    /// today — a pre-existing gap this doesn't attempt to fix.
+    pub raw_url: String,
 }
 
 /// Everything here talks to `ravyn-api` server-to-server, forwarding the
@@ -95,13 +109,14 @@ pub(crate) mod ssr {
         pub created_at: String,
     }
 
-    /// Fills in the two direct-to-`ravyn-api` URLs. Shared by every server
+    /// Fills in the direct-to-`ravyn-api` URLs. Shared by every server
     /// function that returns files, so the URL scheme only lives in one place.
     pub fn into_file_summary(file: ApiFileSummary) -> FileSummary {
         let base = public_api_base_url();
         FileSummary {
-            url: format!("{base}/files/{}", file.id),
+            url: format!("{base}/v/{}", file.id),
             thumbnail_url: format!("{base}/files/{}/thumbnail", file.id),
+            raw_url: format!("{base}/files/{}", file.id),
             id: file.id,
             original_name: file.original_name,
             content_type: file.content_type,

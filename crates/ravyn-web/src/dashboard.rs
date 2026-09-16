@@ -4,12 +4,13 @@ use leptos_router::components::{Outlet, A};
 use crate::browser::{copy_to_clipboard, submit_input_form, sync_dropped_files};
 use crate::format::{format_date, format_size};
 use crate::icons::{
-    CheckIcon, CopyIcon, FileTypeIcon, FolderIcon, LockIcon, PlusIcon, RavenIcon, SearchIcon,
-    TrashIcon,
+    CheckIcon, CloseIcon, CopyIcon, DownloadIcon, ExternalLinkIcon, FileTypeIcon, FolderIcon,
+    LockIcon, PlusIcon, RavenIcon, SearchIcon, TrashIcon,
 };
 use crate::server_fns::{
-    list_files, list_folders, CreateFolder, DeleteFile, DeleteFolder, FileSummary, FolderSummary,
-    Login, Logout, MoveFileToFolder, SetFilePassword, SetFolderPassword,
+    get_registration_status, list_files, list_folders, CreateFolder, DeleteFile, DeleteFolder,
+    FileSummary, FolderSummary, Login, Logout, MoveFileToFolder, SetFilePassword,
+    SetFolderPassword,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,6 +114,17 @@ pub struct DashboardContext {
     pub actions: Actions,
     pub files: Resource<Result<Vec<FileSummary>, ServerFnError>>,
     pub folders: Resource<Result<Vec<FolderSummary>, ServerFnError>>,
+    /// The id of the file whose detail modal is open, if any. Lives here —
+    /// created once, in the top-level `DashboardLayout` component, which
+    /// route navigation never tears down — rather than inside `BrowsePage`
+    /// or `Browse`, both of which get rebuilt from scratch on every
+    /// file/folder mutation (see the comment above `DashboardLayout`'s own
+    /// `{move || ...}` block for why). A signal's *value* outlives whatever
+    /// component tree happens to be reading it at the moment, as long as
+    /// the signal itself was created somewhere stable — so the modal stays
+    /// open across an edit made through its own controls without needing
+    /// to change how or when the rest of the page re-renders.
+    pub opened_file: RwSignal<Option<String>>,
 }
 
 /// The shared shell for the logged-in app: gates everything behind login,
@@ -151,6 +163,7 @@ pub fn DashboardLayout() -> impl IntoView {
         actions,
         files,
         folders,
+        opened_file: RwSignal::new(None),
     });
 
     view! {
@@ -203,6 +216,7 @@ fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
 fn LoginForm(login_action: ServerAction<Login>) -> impl IntoView {
     let (username, set_username) = signal(String::new());
     let (password, set_password) = signal(String::new());
+    let status = Resource::new(|| (), |_| get_registration_status());
 
     view! {
         <div class="login-screen">
@@ -246,6 +260,42 @@ fn LoginForm(login_action: ServerAction<Login>) -> impl IntoView {
                             .map(|err| view! { <p class="form-error">{err.to_string()}</p> })
                     }}
                 </form>
+                // Its own `<Suspense>`, deliberately not sharing the outer
+                // one gating this whole form on `files` — an extra resource
+                // dropped into an already-Suspense-tracked subtree caused
+                // exactly the hydration corruption described on
+                // `DashboardContext::opened_file` above, just for the
+                // login screen instead of the dashboard.
+                <Suspense fallback=|| ()>
+                    {move || {
+                        status
+                            .get()
+                            .and_then(Result::ok)
+                            .and_then(|status| {
+                                if status.setup_required {
+                                    Some(
+                                        view! {
+                                            <p class="login-tagline">
+                                                <A href="/register">
+                                                    "no account yet? set up ravyn"
+                                                </A>
+                                            </p>
+                                        },
+                                    )
+                                } else if status.mode == "open" || status.mode == "invite" {
+                                    Some(
+                                        view! {
+                                            <p class="login-tagline">
+                                                <A href="/register">"create an account"</A>
+                                            </p>
+                                        },
+                                    )
+                                } else {
+                                    None
+                                }
+                            })
+                    }}
+                </Suspense>
             </div>
         </div>
     }
@@ -306,13 +356,20 @@ pub fn BrowsePage() -> impl IntoView {
         {move || {
             let files = ctx.files.get().and_then(Result::ok).unwrap_or_default();
             let folders = ctx.folders.get().and_then(Result::ok).unwrap_or_default();
-            view! { <Browse files folders actions=ctx.actions /> }
+            view! {
+                <Browse files folders actions=ctx.actions opened_file=ctx.opened_file />
+            }
         }}
     }
 }
 
 #[component]
-fn Browse(files: Vec<FileSummary>, folders: Vec<FolderSummary>, actions: Actions) -> impl IntoView {
+fn Browse(
+    files: Vec<FileSummary>,
+    folders: Vec<FolderSummary>,
+    actions: Actions,
+    opened_file: RwSignal<Option<String>>,
+) -> impl IntoView {
     let selected_folder = RwSignal::new(None::<String>);
     let search = RwSignal::new(String::new());
     let type_filter = RwSignal::new(TypeFilter::All);
@@ -339,6 +396,9 @@ fn Browse(files: Vec<FileSummary>, folders: Vec<FolderSummary>, actions: Actions
         }
     };
 
+    let folders_for_modal = folders.clone();
+    let files_for_modal = files.clone();
+
     view! {
         <div class="workspace">
             <FolderSidebar folders=folders.clone() selected_folder actions/>
@@ -349,21 +409,32 @@ fn Browse(files: Vec<FileSummary>, folders: Vec<FolderSummary>, actions: Actions
                 {move || {
                     let visible = visible_files();
                     if visible.is_empty() {
+                        let message = if files.is_empty() {
+                            view! {
+                                <p>
+                                    "nothing here yet — " <A href="/upload">"upload something"</A>
+                                    " to get started."
+                                </p>
+                            }
+                                .into_any()
+                        } else {
+                            view! { <p>"nothing matches — try adjusting your filters."</p> }
+                                .into_any()
+                        };
                         view! {
                             <div class="empty-state">
                                 <RavenIcon class="raven"/>
-                                <p>"nothing here — drop something above, or adjust your filters."</p>
+                                {message}
                             </div>
                         }
                             .into_any()
                     } else {
-                        let folders = folders.clone();
                         view! {
                             <div class="file-grid">
                                 {visible
                                     .into_iter()
                                     .map(|file| {
-                                        view! { <FileCard file folders=folders.clone() actions /> }
+                                        view! { <FileCard file actions opened_file /> }
                                     })
                                     .collect_view()}
                             </div>
@@ -372,6 +443,17 @@ fn Browse(files: Vec<FileSummary>, folders: Vec<FolderSummary>, actions: Actions
                     }
                 }}
             </div>
+
+            {move || {
+                opened_file
+                    .get()
+                    .and_then(|id| files_for_modal.iter().find(|f| f.id == id).cloned())
+                    .map(|file| {
+                        view! {
+                            <FileModal file folders=folders_for_modal.clone() actions opened_file />
+                        }
+                    })
+            }}
         </div>
     }
 }
@@ -528,26 +610,25 @@ fn FilterBar(
 }
 
 #[component]
-fn FileCard(file: FileSummary, folders: Vec<FolderSummary>, actions: Actions) -> impl IntoView {
+fn FileCard(
+    file: FileSummary,
+    actions: Actions,
+    opened_file: RwSignal<Option<String>>,
+) -> impl IntoView {
     let (copied, set_copied) = signal(false);
     let (thumb_failed, set_thumb_failed) = signal(false);
-    let (show_password_form, set_show_password_form) = signal(false);
-    let (password_input, set_password_input) = signal(String::new());
 
     let is_image = file.content_type.starts_with("image/");
-    let url = file.url.clone();
     let copy_url = file.url.clone();
     let thumbnail_url = file.thumbnail_url.clone();
     let id_for_delete = file.id.clone();
-    let id_for_move = file.id.clone();
-    let id_for_password = file.id.clone();
+    let id_for_click = file.id.clone();
     let name = file.original_name.clone();
     let name_for_alt = name.clone();
     let content_type = file.content_type.clone();
     let size = file.size_bytes;
     let date = format_date(&file.created_at).to_string();
     let has_password = file.has_password;
-    let current_folder = file.folder_id.clone();
 
     let copy = move |_| {
         copy_to_clipboard(&copy_url);
@@ -561,7 +642,12 @@ fn FileCard(file: FileSummary, folders: Vec<FolderSummary>, actions: Actions) ->
     view! {
         <div class="file-card">
             <div class="file-thumb">
-                <a href=url.clone() target="_blank" title="open">
+                <button
+                    type="button"
+                    class="file-thumb-btn"
+                    title="view details"
+                    on:click=move |_| opened_file.set(Some(id_for_click.clone()))
+                >
                     {move || {
                         if is_image && !thumb_failed.get() {
                             view! {
@@ -577,7 +663,7 @@ fn FileCard(file: FileSummary, folders: Vec<FolderSummary>, actions: Actions) ->
                             view! { <FileTypeIcon content_type=content_type.clone() /> }.into_any()
                         }
                     }}
-                </a>
+                </button>
                 {has_password.then(|| view! { <div class="lock-badge"><LockIcon/></div> })}
                 <div class="file-actions">
                     <button
@@ -610,73 +696,203 @@ fn FileCard(file: FileSummary, folders: Vec<FolderSummary>, actions: Actions) ->
                     {name.clone()}
                 </p>
                 <p class="file-sub">{format_size(size)}" · "{date}</p>
-                <div class="file-manage">
-                    <select
-                        class="folder-select"
-                        on:change=move |ev| {
-                            let value = event_target_value(&ev);
-                            let folder_id = (!value.is_empty()).then_some(value);
+            </div>
+        </div>
+    }
+}
+
+/// The click-through detail view for a single file: a large preview plus
+/// everything `FileCard` used to cram into the grid card itself —
+/// categorizing into a folder, setting a password, copying the link,
+/// deleting — the same "click a thumbnail, get a modal" shape chibisafe and
+/// Zipline both use.
+#[component]
+fn FileModal(
+    file: FileSummary,
+    folders: Vec<FolderSummary>,
+    actions: Actions,
+    opened_file: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let (copied, set_copied) = signal(false);
+    let (password_input, set_password_input) = signal(String::new());
+
+    let is_image = file.content_type.starts_with("image/");
+    let is_video = file.content_type.starts_with("video/");
+    let is_audio = file.content_type.starts_with("audio/");
+
+    let copy_url = file.url.clone();
+    let id_for_delete = file.id.clone();
+    let id_for_move = file.id.clone();
+    let id_for_password = file.id.clone();
+    let current_folder = file.folder_id.clone();
+    let has_password = file.has_password;
+    let short_hash = file.sha256.get(..12).unwrap_or(&file.sha256).to_string();
+
+    let close = move |_| opened_file.set(None);
+
+    let copy = move |_| {
+        copy_to_clipboard(&copy_url);
+        set_copied.set(true);
+        set_timeout(
+            move || set_copied.set(false),
+            std::time::Duration::from_millis(1500),
+        );
+    };
+
+    view! {
+        <div class="modal-backdrop" on:click=close>
+            <div class="modal-panel" on:click=|ev| ev.stop_propagation()>
+                <button type="button" class="modal-close" title="close" on:click=close>
+                    <CloseIcon/>
+                </button>
+
+                <div class="modal-preview">
+                    {if is_image {
+                        view! {
+                            <img src=file.raw_url.clone() alt=file.original_name.clone() />
+                        }
+                            .into_any()
+                    } else if is_video {
+                        view! { <video src=file.raw_url.clone() controls /> }.into_any()
+                    } else if is_audio {
+                        view! { <audio src=file.raw_url.clone() controls /> }.into_any()
+                    } else {
+                        view! { <FileTypeIcon content_type=file.content_type.clone() /> }.into_any()
+                    }}
+                </div>
+
+                <div class="modal-body">
+                    <h3 class="modal-title" title=file.original_name.clone()>
+                        {file.original_name.clone()}
+                    </h3>
+
+                    <dl class="modal-meta">
+                        <div>
+                            <dt>"size"</dt>
+                            <dd>{format_size(file.size_bytes)}</dd>
+                        </div>
+                        <div>
+                            <dt>"type"</dt>
+                            <dd>{file.content_type.clone()}</dd>
+                        </div>
+                        <div>
+                            <dt>"uploaded"</dt>
+                            <dd>{format_date(&file.created_at).to_string()}</dd>
+                        </div>
+                        <div>
+                            <dt>"sha256"</dt>
+                            <dd class="modal-hash" title=file.sha256.clone()>
+                                {short_hash}"…"
+                            </dd>
+                        </div>
+                    </dl>
+
+                    <div class="field">
+                        <label>"folder"</label>
+                        <select
+                            class="folder-select"
+                            on:change=move |ev| {
+                                let value = event_target_value(&ev);
+                                let folder_id = (!value.is_empty()).then_some(value);
+                                actions
+                                    .move_file
+                                    .dispatch(MoveFileToFolder {
+                                        id: id_for_move.clone(),
+                                        folder_id,
+                                    });
+                            }
+                        >
+                            <option value="" selected=current_folder.is_none()>
+                                "no folder"
+                            </option>
+                            {folders
+                                .into_iter()
+                                .map(|folder| {
+                                    let selected = current_folder.as_deref()
+                                        == Some(folder.id.as_str());
+                                    view! {
+                                        <option value=folder.id.clone() selected=selected>
+                                            {folder.name.clone()}
+                                        </option>
+                                    }
+                                })
+                                .collect_view()}
+                        </select>
+                    </div>
+
+                    <form
+                        class="password-inline"
+                        on:submit=move |ev| {
+                            ev.prevent_default();
+                            let password = password_input.get();
                             actions
-                                .move_file
-                                .dispatch(MoveFileToFolder { id: id_for_move.clone(), folder_id });
+                                .file_password
+                                .dispatch(SetFilePassword {
+                                    id: id_for_password.clone(),
+                                    password: (!password.is_empty()).then_some(password),
+                                });
+                            set_password_input.set(String::new());
                         }
                     >
-                        <option value="" selected=current_folder.is_none()>
-                            "no folder"
-                        </option>
-                        {folders
-                            .into_iter()
-                            .map(|folder| {
-                                let selected = current_folder.as_deref() == Some(folder.id.as_str());
-                                view! {
-                                    <option value=folder.id.clone() selected=selected>
-                                        {folder.name.clone()}
-                                    </option>
-                                }
-                            })
-                            .collect_view()}
-                    </select>
-                    <button
-                        class="icon-btn-sm"
-                        title="password"
-                        on:click=move |_| set_show_password_form.update(|v| *v = !*v)
-                    >
-                        <LockIcon/>
-                    </button>
-                </div>
-                {move || {
-                    show_password_form
-                        .get()
-                        .then(|| {
-                            let id_for_password = id_for_password.clone();
-                            view! {
-                                <form
-                                    class="password-inline"
-                                    on:submit=move |ev| {
-                                        ev.prevent_default();
-                                        let password = password_input.get();
-                                        actions
-                                            .file_password
-                                            .dispatch(SetFilePassword {
-                                                id: id_for_password.clone(),
-                                                password: (!password.is_empty()).then_some(password),
-                                            });
-                                        set_show_password_form.set(false);
-                                        set_password_input.set(String::new());
-                                    }
-                                >
-                                    <input
-                                        type="password"
-                                        placeholder=if has_password { "change or clear" } else { "set password" }
-                                        on:input=move |ev| set_password_input.set(event_target_value(&ev))
-                                    />
-                                    <button type="submit" class="btn btn-ghost">
-                                        "save"
-                                    </button>
-                                </form>
+                        <input
+                            type="password"
+                            placeholder=if has_password {
+                                "change or clear password"
+                            } else {
+                                "set a password"
                             }
-                        })
-                }}
+                            on:input=move |ev| set_password_input.set(event_target_value(&ev))
+                        />
+                        <button type="submit" class="btn btn-ghost">
+                            "save"
+                        </button>
+                    </form>
+
+                    <div class="modal-actions">
+                        <button
+                            class="icon-btn"
+                            class:copied=move || copied.get()
+                            on:click=copy
+                            title="copy link"
+                        >
+                            {move || {
+                                if copied.get() {
+                                    view! { <CheckIcon/> }.into_any()
+                                } else {
+                                    view! { <CopyIcon/> }.into_any()
+                                }
+                            }}
+                        </button>
+                        <a
+                            class="icon-btn"
+                            href=file.raw_url.clone()
+                            target="_blank"
+                            title="open original"
+                        >
+                            <ExternalLinkIcon/>
+                        </a>
+                        <a
+                            class="icon-btn"
+                            href=file.raw_url.clone()
+                            download=file.original_name.clone()
+                            title="download"
+                        >
+                            <DownloadIcon/>
+                        </a>
+                        <button
+                            class="icon-btn danger"
+                            title="delete"
+                            on:click=move |_| {
+                                actions
+                                    .delete_file
+                                    .dispatch(DeleteFile { id: id_for_delete.clone() });
+                                opened_file.set(None);
+                            }
+                        >
+                            <TrashIcon/>
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     }

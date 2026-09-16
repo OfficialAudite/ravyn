@@ -77,9 +77,12 @@ fn main_storage_config() -> StorageConfig {
     }
 }
 
-/// Bootstraps the first (or an additional) user. There is no self-service
-/// registration by design — accounts are provisioned by whoever runs the
-/// server: `cargo run -p ravyn-api -- create-user <username> <password>`.
+/// Creates an admin account from the CLI: `cargo run -p ravyn-api --
+/// create-user <username> <password>`. Mainly useful for bootstrapping an
+/// instance without ever exposing it publicly, or for adding another admin
+/// later — the normal way to get a first account is registering through the
+/// web UI, which mints an admin for you once (see `routes::account::register`)
+/// and lets that admin decide from `/settings` how anyone after them signs up.
 async fn create_user(database_url: &str, username: &str, password: &str) {
     let db = Db::connect(database_url)
         .await
@@ -90,6 +93,10 @@ async fn create_user(database_url: &str, username: &str, password: &str) {
         id: UserId::new(),
         username: username.to_string(),
         password_hash: core_auth::hash_password(password).expect("failed to hash password"),
+        // Shell access to run this command already implies operator-level
+        // trust, so it always mints an admin — unlike web registration,
+        // where only the very first account gets that automatically.
+        is_admin: true,
         created_at: OffsetDateTime::now_utc(),
     };
 

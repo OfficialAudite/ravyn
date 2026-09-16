@@ -8,7 +8,10 @@ use axum_extra::extract::{
     cookie::{Cookie, SameSite},
     CookieJar,
 };
-use ravyn_core::{auth as core_auth, ApiToken, ApiTokenId};
+use ravyn_core::{
+    auth as core_auth, ApiToken, ApiTokenId, EmbedSettings, Invite, InviteId, RegistrationMode,
+    User, UserId,
+};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -38,10 +41,16 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    new_session_response(&state, user.id).await
+}
+
+/// Creates a session for `user_id` and sets its cookie — shared by `login`
+/// and `register`, since registering also signs you straight in.
+async fn new_session_response(state: &AppState, user_id: UserId) -> Response {
     let token = core_auth::generate_token();
     let session = ravyn_core::Session {
         token_hash: core_auth::hash_token(&token),
-        user_id: user.id,
+        user_id,
         expires_at: OffsetDateTime::now_utc() + SESSION_LIFETIME,
         created_at: OffsetDateTime::now_utc(),
     };
@@ -63,6 +72,141 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>
     (CookieJar::new().add(cookie), StatusCode::OK).into_response()
 }
 
+#[derive(Deserialize)]
+pub struct RegisterRequest {
+    username: String,
+    password: String,
+    invite_token: Option<String>,
+}
+
+/// The very first account on an instance always gets through here and
+/// becomes an admin — there'd be no admin able to open registration up
+/// otherwise. Every account after that is gated by whatever registration
+/// mode the admin has set (`RegistrationMode`), checked fresh on every
+/// call rather than cached anywhere.
+pub async fn register(
+    State(state): State<AppState>,
+    Json(body): Json<RegisterRequest>,
+) -> Response {
+    if body.username.trim().is_empty() || body.password.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "username and password are required",
+        )
+            .into_response();
+    }
+
+    let is_first_user = match state.db.has_any_users().await {
+        Ok(any) => !any,
+        Err(err) => {
+            tracing::error!(%err, "failed to check for existing users");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let mut redeemed_invite = None;
+
+    if !is_first_user {
+        let mode = match state.db.get_registration_mode().await {
+            Ok(mode) => mode,
+            Err(err) => {
+                tracing::error!(%err, "failed to load registration mode");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+
+        match mode {
+            RegistrationMode::Closed => return StatusCode::FORBIDDEN.into_response(),
+            RegistrationMode::Open => {}
+            RegistrationMode::Invite => {
+                let Some(token) = body.invite_token.as_deref().filter(|t| !t.is_empty()) else {
+                    return (StatusCode::BAD_REQUEST, "an invite code is required").into_response();
+                };
+
+                let invite = match state
+                    .db
+                    .get_unused_invite_by_token_hash(&core_auth::hash_token(token))
+                    .await
+                {
+                    Ok(Some(invite)) => invite,
+                    Ok(None) => {
+                        return (StatusCode::FORBIDDEN, "invalid or already-used invite code")
+                            .into_response()
+                    }
+                    Err(err) => {
+                        tracing::error!(%err, "failed to look up invite");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                };
+                redeemed_invite = Some(invite.id);
+            }
+        }
+    }
+
+    match state.db.get_user_by_username(&body.username).await {
+        Ok(Some(_)) => return (StatusCode::CONFLICT, "username already taken").into_response(),
+        Ok(None) => {}
+        Err(err) => {
+            tracing::error!(%err, "failed to look up user");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    let password_hash = match core_auth::hash_password(&body.password) {
+        Ok(hash) => hash,
+        Err(err) => {
+            tracing::error!(%err, "failed to hash password");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let user = User {
+        id: UserId::new(),
+        username: body.username,
+        password_hash,
+        is_admin: is_first_user,
+        created_at: OffsetDateTime::now_utc(),
+    };
+
+    if let Err(err) = state.db.create_user(&user).await {
+        tracing::error!(%err, "failed to create user");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    if let Some(invite_id) = redeemed_invite {
+        if let Err(err) = state.db.mark_invite_used(invite_id, user.id).await {
+            tracing::warn!(%err, "failed to mark invite as used");
+        }
+    }
+
+    new_session_response(&state, user.id).await
+}
+
+/// Public: lets the login screen decide whether to offer "create an
+/// account" (and what it needs to ask for) without requiring auth to find
+/// out — there's nothing sensitive in "is this instance claimed yet" or
+/// "what's the current registration mode".
+pub async fn registration_status(State(state): State<AppState>) -> Response {
+    let setup_required = match state.db.has_any_users().await {
+        Ok(any) => !any,
+        Err(err) => {
+            tracing::error!(%err, "failed to check for existing users");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let mode = match state.db.get_registration_mode().await {
+        Ok(mode) => mode,
+        Err(err) => {
+            tracing::error!(%err, "failed to load registration mode");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    Json(serde_json::json!({ "setup_required": setup_required, "mode": mode.as_str() }))
+        .into_response()
+}
+
 pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token_hash = core_auth::hash_token(cookie.value());
@@ -73,7 +217,133 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
 }
 
 pub async fn me(AuthedUser(user): AuthedUser) -> Response {
-    Json(serde_json::json!({ "username": user.username })).into_response()
+    Json(serde_json::json!({ "username": user.username, "is_admin": user.is_admin }))
+        .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SetInstanceSettingsRequest {
+    registration_mode: String,
+}
+
+pub async fn get_instance_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    match state.db.get_registration_mode().await {
+        Ok(mode) => Json(serde_json::json!({ "registration_mode": mode.as_str() })).into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to load registration mode");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn set_instance_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Json(body): Json<SetInstanceSettingsRequest>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let Some(mode) = RegistrationMode::parse(&body.registration_mode) else {
+        return (StatusCode::BAD_REQUEST, "invalid registration mode").into_response();
+    };
+
+    if let Err(err) = state.db.set_registration_mode(mode).await {
+        tracing::error!(%err, "failed to save registration mode");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Mints a single-use invite code for invite-only registration. The
+/// plaintext code is only ever returned here, once — same pattern as an API
+/// token.
+pub async fn create_invite(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let token = core_auth::generate_token();
+    let invite = Invite {
+        id: InviteId::new(),
+        token_hash: core_auth::hash_token(&token),
+        created_by: user.id,
+        created_at: OffsetDateTime::now_utc(),
+        used_by: None,
+        used_at: None,
+    };
+
+    if let Err(err) = state.db.create_invite(&invite).await {
+        tracing::error!(%err, "failed to create invite");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    Json(serde_json::json!({ "id": invite.id.0, "token": token })).into_response()
+}
+
+#[derive(Serialize)]
+pub struct InviteSummary {
+    id: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    used: bool,
+}
+
+impl From<Invite> for InviteSummary {
+    fn from(invite: Invite) -> Self {
+        InviteSummary {
+            id: invite.id.0,
+            created_at: invite.created_at,
+            used: invite.used_at.is_some(),
+        }
+    }
+}
+
+pub async fn list_invites(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    match state.db.list_invites().await {
+        Ok(invites) => {
+            let summaries: Vec<InviteSummary> =
+                invites.into_iter().map(InviteSummary::from).collect();
+            Json(summaries).into_response()
+        }
+        Err(err) => {
+            tracing::error!(%err, "failed to list invites");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn delete_invite(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    if let Err(err) = state.db.delete_invite(InviteId(id)).await {
+        tracing::error!(%err, "failed to delete invite");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[derive(Deserialize)]
@@ -164,6 +434,32 @@ pub async fn delete_api_token(
 
     if let Err(err) = state.db.delete_api_token(token.id).await {
         tracing::error!(%err, "failed to delete api token");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+pub async fn get_embed_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+) -> Response {
+    match state.db.get_embed_settings(user.id).await {
+        Ok(settings) => Json(settings).into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to load embed settings");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn set_embed_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Json(body): Json<EmbedSettings>,
+) -> Response {
+    if let Err(err) = state.db.set_embed_settings(user.id, &body).await {
+        tracing::error!(%err, "failed to save embed settings");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 

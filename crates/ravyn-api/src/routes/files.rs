@@ -19,7 +19,7 @@ pub struct AccessQuery {
 }
 
 fn thumbnail_key(id: FileId) -> String {
-    format!("{}.jpg", id.0)
+    format!("{}.avif", id.0)
 }
 
 pub async fn get_file(
@@ -86,7 +86,7 @@ pub async fn get_file_thumbnail(
     }
 
     match state.thumbnails.get(&thumbnail_key(file.id)).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
+        Ok(bytes) => ([(header::CONTENT_TYPE, "image/avif")], bytes).into_response(),
         Err(err) if err.is_not_found() => StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
             tracing::error!(%err, "failed to read thumbnail");
@@ -96,24 +96,28 @@ pub async fn get_file_thumbnail(
 }
 
 /// Best-effort: a thumbnail is a nice-to-have, not something an upload
-/// should fail over. Anything that isn't a decodable still image (a
-/// corrupt file, a format we don't handle) is silently skipped.
+/// should fail over. Anything that isn't a decodable still image (a corrupt
+/// file, a format we don't handle) is silently skipped. Awaited before the
+/// upload response returns — resizing to 400x400 first keeps the AVIF
+/// encode itself cheap regardless of the original's size, and awaiting it
+/// guarantees a file never shows up in a list before its thumbnail exists
+/// (a backgrounded version of this raced the dashboard's first render).
 async fn generate_thumbnail(state: &AppState, id: FileId, bytes: &[u8]) {
     let Ok(image) = image::load_from_memory(bytes) else {
         return;
     };
 
-    let mut jpeg = Vec::new();
-    let encoded = image.thumbnail(400, 400).write_to(
-        &mut std::io::Cursor::new(&mut jpeg),
-        image::ImageFormat::Jpeg,
-    );
-
-    if encoded.is_err() {
+    let mut avif = Vec::new();
+    let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut avif, 6, 70);
+    if image
+        .thumbnail(400, 400)
+        .write_with_encoder(encoder)
+        .is_err()
+    {
         return;
     }
 
-    if let Err(err) = state.thumbnails.put(&thumbnail_key(id), jpeg.into()).await {
+    if let Err(err) = state.thumbnails.put(&thumbnail_key(id), avif.into()).await {
         tracing::warn!(%err, "failed to store thumbnail");
     }
 }

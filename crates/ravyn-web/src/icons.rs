@@ -3,8 +3,74 @@ use leptos::prelude::*;
 #[component]
 pub fn RavenIcon(#[prop(optional, into)] class: String) -> impl IntoView {
     view! {
-        <svg class=class viewBox="0 0 24 24" fill="currentColor">
-            <path d="M2 17 Q6 6 12 7 Q18 6 22 17 Q16 12 12 13 Q8 12 2 17 Z" />
+        <svg
+            class=class
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M16 7h.01" />
+            <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20" />
+            <path d="m20 7 2 .5-2 .5" />
+            <path d="M10 18v3" />
+            <path d="M14 17.75V21" />
+            <path d="M7 18a6 6 0 0 0 3.84-10.61" />
+        </svg>
+    }
+}
+
+#[component]
+pub fn CloseIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+        </svg>
+    }
+}
+
+#[component]
+pub fn DownloadIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M12 15V3" />
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="m7 10 5 5 5-5" />
+        </svg>
+    }
+}
+
+#[component]
+pub fn ExternalLinkIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M15 3h6v6" />
+            <path d="M10 14 21 3" />
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
         </svg>
     }
 }

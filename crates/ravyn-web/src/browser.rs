@@ -76,3 +76,22 @@ pub fn copy_to_clipboard(text: &str) {
         let _ = text;
     }
 }
+
+/// A full browser navigation, not a client-side route change — used after
+/// registering, since the register page lives outside the router tree that
+/// `DashboardLayout`'s login state reacts to. Reloading picks up the
+/// session cookie the server just set and lands on the real, authenticated
+/// SSR page rather than trying to fake a client-side transition into it.
+pub fn navigate_to(path: &str) {
+    #[cfg(feature = "hydrate")]
+    {
+        if let Some(window) = web_sys::window() {
+            let _ = window.location().set_href(path);
+        }
+    }
+
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = path;
+    }
+}

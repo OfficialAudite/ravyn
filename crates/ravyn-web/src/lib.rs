@@ -10,6 +10,7 @@ pub mod browser;
 pub mod dashboard;
 pub mod format;
 pub mod icons;
+pub mod register;
 pub mod server_fns;
 pub mod settings;
 pub mod shared_folder;

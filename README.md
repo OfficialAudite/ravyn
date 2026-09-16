@@ -76,22 +76,67 @@ that domain no matter which backend is storing the bytes.
 
 ## Auth
 
-There's no self-service registration — accounts are provisioned by whoever runs the
-server:
+The first account created — via the web UI at `/register`, or via the CLI below —
+automatically becomes the instance's admin. Everyone after that is gated by whatever
+registration mode the admin sets from `/settings` (`RegistrationMode` in
+`ravyn-core`):
+
+- **closed** (default) — no self-service registration; accounts only via the CLI or
+  an admin-issued invite.
+- **open** — anyone who can reach the server can create an account.
+- **invite** — registering requires a single-use invite code, generated from
+  `/settings` by an admin.
 
 ```sh
 DATABASE_URL=postgres://localhost/ravyn cargo run -p ravyn-api -- create-user alice hunter2
 ```
 
+The CLI always creates an admin (shell access already implies that level of trust)
+and works regardless of the current registration mode — handy for headless setups or
+adding another admin later.
+
+- `POST /register` (`{"username", "password", "invite_token"}`) creates an account,
+  subject to the current registration mode, and signs you in — same cookie as login.
+- `GET /registration-status` (public) reports whether the instance still needs its
+  first account and what the current registration mode is, so the login screen knows
+  whether to offer a "create an account" link.
 - `POST /login` (`{"username", "password"}`) sets a session cookie, for the web UI.
 - `POST /api-tokens` (`{"name"}`, requires a session cookie) mints an API token,
   returned once as `{"token"}`. This is what goes in a ShareX config.
 - `POST /files` accepts either the session cookie or an `Authorization: Bearer
   <token>` header — ShareX only ever uses the latter.
 
-An example ShareX custom uploader is in
-[`contrib/sharex/ravyn.sxcu`](contrib/sharex/ravyn.sxcu) — import it, then paste your
-token in place of `YOUR_API_TOKEN`.
+Creating a token from the web UI (`/settings`) offers a **download ShareX config**
+button right there — a `.sxcu` with your token and this instance's URL already filled
+in, ready to import. [`contrib/sharex/ravyn.sxcu`](contrib/sharex/ravyn.sxcu) is kept
+as a plain reference for anyone configuring ShareX by hand instead (e.g. scripting a
+headless setup) — replace `YOUR_API_TOKEN` there yourself.
+
+## Embeds (Discord, Slack, Twitter)
+
+Every share link already works as a direct image/video link — paste one in Discord
+and it previews natively, embeds on or off. Turning embeds on (`/settings`, or
+`PUT /embed-settings`) additionally sets a custom title, description, and accent color
+that Discord/Slack/Twitter read from the link, the same feature under the same name in
+Zipline.
+
+This works by giving every file a stable **view link** (`GET /v/{id}`, what copy-link
+and the ShareX config actually point at) instead of the raw `/files/{id}` URL:
+
+- Embeds off (the default): `/v/{id}` just 302-redirects to the raw file. Discord
+  follows the redirect and previews the raw image/video exactly as it would if you'd
+  linked it directly — nothing about today's behavior changes.
+- Embeds on: `/v/{id}` renders an actual HTML page with Open Graph tags (`og:title`,
+  `og:description`, `og:image`/`og:video`/`og:audio` depending on content type,
+  `theme-color` for Discord's accent stripe) pointing back at the raw file, plus a
+  visible `<img>`/`<video>`/`<audio>` tag so a human opening the link directly still
+  sees the file, not a bare meta-tag page.
+
+`embedTitle`/`embedDescription`/`embedSiteName` support `{file.name}`, `{file.size}`,
+`{file.type}`, and `{user.username}` template variables, substituted in
+`crates/ravyn-api/src/routes/view.rs`. Settings are per-user (`users.embed_*` columns),
+not global — matches Zipline's model, and fits naturally since ravyn already scopes
+everything else per-owner.
 
 ## Folders, passwords, previews
 
@@ -124,7 +169,8 @@ The logged-in app is three pages under a shared layout (`DashboardLayout` in
 - `/upload` — just the dropzone.
 - `/settings` — account info, API token management (create/list/revoke — the token
   create endpoint used to be dashboard-only and had no way to see or revoke a token
-  afterwards), and a read-only storage backend summary.
+  afterwards), a read-only storage backend summary, and — for an admin — registration
+  mode and invite codes.
 
 All three share one set of file/folder resources and mutation actions via
 `provide_context`/`expect_context`, so an action taken on one page (say, deleting a
@@ -132,15 +178,19 @@ file) is reflected everywhere without a separate fetch per page. `/f/{id}` (the 
 shared-folder view) stays a sibling top-level route, outside this layout, since it's
 usable without logging in at all.
 
-Multi-user accounts aren't supported yet — `/settings` has a placeholder note about it,
-but there's currently exactly one owner per instance (`create-user` at the CLI).
+Multiple users are supported — every file/folder is scoped to its owner, and an
+admin controls from `/settings` whether anyone else can register (see
+[Auth](#auth)). There's no shared/team view of another user's files; each account's
+hoard is its own.
 
 ## Docker
 
 ```sh
 docker compose up -d --build
-docker compose run --rm api create-user alice hunter2
 ```
+
+Then either visit `/register` in a browser to create the first (admin) account, or
+run `docker compose run --rm api create-user alice hunter2` for a headless setup.
 
 Serves the API on `:3000` and the web UI on `:3001`. See `docker-compose.yml` for the
 Postgres, storage-volume, and `RAVYN_PUBLIC_API_URL` wiring — that last one matters

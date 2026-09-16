@@ -9,5 +9,5 @@
   },
   "Body": "MultipartFormData",
   "FileFormName": "file",
-  "URL": "http://localhost:3000/files/{json:id}"
+  "URL": "http://localhost:3000/v/{json:id}"
 }

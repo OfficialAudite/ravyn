@@ -19,6 +19,7 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:ravyn@db:5432/ravyn
       STORAGE_ROOT: /data
+      THUMBNAIL_ROOT: /data/thumbnails
       LISTEN_ADDR: 0.0.0.0:3000
     ports:
       - "3000:3000"

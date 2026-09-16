@@ -2,7 +2,9 @@ mod api_tokens;
 mod error;
 mod files;
 mod folders;
+mod invites;
 mod sessions;
+mod settings;
 mod users;
 
 pub use error::DbError;

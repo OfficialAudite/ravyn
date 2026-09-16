@@ -1,6 +1,7 @@
 mod account;
 mod files;
 mod folders;
+mod view;
 
 use axum::{
     http::StatusCode,
@@ -31,11 +32,21 @@ pub fn router(state: AppState) -> Router {
         .route("/folders/{id}/files", get(folders::get_folder_files))
         .route("/login", post(account::login))
         .route("/logout", post(account::logout))
+        .route("/register", post(account::register))
+        .route("/registration-status", get(account::registration_status))
         .route("/me", get(account::me))
         .route("/api-tokens", post(account::create_api_token))
         .route("/api-tokens", get(account::list_api_tokens))
         .route("/api-tokens/{id}", delete(account::delete_api_token))
         .route("/storage-info", get(account::storage_info))
+        .route("/embed-settings", get(account::get_embed_settings))
+        .route("/embed-settings", put(account::set_embed_settings))
+        .route("/instance-settings", get(account::get_instance_settings))
+        .route("/instance-settings", put(account::set_instance_settings))
+        .route("/invites", post(account::create_invite))
+        .route("/invites", get(account::list_invites))
+        .route("/invites/{id}", delete(account::delete_invite))
+        .route("/v/{id}", get(view::view_file))
         .with_state(state)
 }
 

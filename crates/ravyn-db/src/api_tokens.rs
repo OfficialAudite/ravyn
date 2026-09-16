@@ -9,6 +9,7 @@ struct UserRow {
     id: Uuid,
     username: String,
     password_hash: String,
+    is_admin: bool,
     created_at: OffsetDateTime,
 }
 
@@ -18,6 +19,7 @@ impl From<UserRow> for User {
             id: UserId(row.id),
             username: row.username,
             password_hash: row.password_hash,
+            is_admin: row.is_admin,
             created_at: row.created_at,
         }
     }
