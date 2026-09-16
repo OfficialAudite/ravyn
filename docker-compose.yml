@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: ravyn
+      POSTGRES_DB: ravyn
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  api:
+    build:
+      context: .
+      dockerfile: crates/ravyn-api/Dockerfile
+    environment:
+      DATABASE_URL: postgres://postgres:ravyn@db:5432/ravyn
+      STORAGE_ROOT: /data
+      LISTEN_ADDR: 0.0.0.0:3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - storage:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: crates/ravyn-web/Dockerfile
+    environment:
+      RAVYN_API_URL: http://api:3000
+      # The browser can't resolve the "api" service name — it needs the
+      # host-mapped port for direct file download links.
+      RAVYN_PUBLIC_API_URL: http://localhost:3000
+    ports:
+      - "3001:3001"
+    depends_on:
+      - api
+
+volumes:
+  db-data:
+  storage:

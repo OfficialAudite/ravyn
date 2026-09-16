@@ -1,0 +1,13 @@
+{
+  "Version": "17.0.0",
+  "Name": "ravyn",
+  "DestinationType": "ImageUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "http://localhost:3000/files",
+  "Headers": {
+    "Authorization": "Bearer YOUR_API_TOKEN"
+  },
+  "Body": "MultipartFormData",
+  "FileFormName": "file",
+  "URL": "http://localhost:3000/files/{json:id}"
+}

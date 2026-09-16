@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ravyn-core",
+    "crates/ravyn-storage",
+    "crates/ravyn-db",
+    "crates/ravyn-api",
+    "crates/ravyn-web",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/audite/ravyn"
+
+[workspace.dependencies]
+ravyn-core = { path = "crates/ravyn-core" }
+ravyn-storage = { path = "crates/ravyn-storage" }
+ravyn-db = { path = "crates/ravyn-db" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
