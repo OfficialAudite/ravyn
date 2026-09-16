@@ -71,6 +71,60 @@ impl Db {
         Ok(row.map(User::from))
     }
 
+    pub async fn list_users(&self) -> Result<Vec<User>, DbError> {
+        let rows = sqlx::query_as::<_, UserRow>("select * from users order by created_at asc")
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(User::from).collect())
+    }
+
+    /// Bytes currently stored across every file this user owns — computed
+    /// on the fly rather than kept as a running counter, since a self-hosted
+    /// instance's file count stays small enough that summing is cheap and
+    /// this way it can never drift out of sync with reality.
+    pub async fn get_storage_usage(&self, user_id: UserId) -> Result<i64, DbError> {
+        // `sum()` over a bigint column comes back as `numeric` in Postgres,
+        // not `bigint` — without the cast this fails to decode as `i64` and
+        // (since callers reasonably treat "couldn't check usage" as 0 rather
+        // than failing the request) silently reads as "nothing stored yet"
+        // every time, which quietly defeats the whole quota check.
+        let total: i64 = sqlx::query_scalar(
+            "select coalesce(sum(size_bytes), 0)::bigint from files where owner_id = $1",
+        )
+        .bind(user_id.0)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(total)
+    }
+
+    /// `None` means unlimited — the default for every user until an admin
+    /// sets one.
+    pub async fn get_max_storage_bytes(&self, user_id: UserId) -> Result<Option<i64>, DbError> {
+        let value: Option<i64> =
+            sqlx::query_scalar("select max_storage_bytes from users where id = $1")
+                .bind(user_id.0)
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(value)
+    }
+
+    pub async fn set_max_storage_bytes(
+        &self,
+        user_id: UserId,
+        max_bytes: Option<i64>,
+    ) -> Result<(), DbError> {
+        sqlx::query("update users set max_storage_bytes = $2 where id = $1")
+            .bind(user_id.0)
+            .bind(max_bytes)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn get_embed_settings(&self, user_id: UserId) -> Result<EmbedSettings, DbError> {
         #[derive(sqlx::FromRow)]
         struct Row {

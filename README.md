@@ -112,6 +112,16 @@ in, ready to import. [`contrib/sharex/ravyn.sxcu`](contrib/sharex/ravyn.sxcu) is
 as a plain reference for anyone configuring ShareX by hand instead (e.g. scripting a
 headless setup) — replace `YOUR_API_TOKEN` there yourself.
 
+### Per-user storage quotas
+
+`/settings` shows an admin every account on the instance with its current storage
+usage, and a field to set (or clear) a per-user cap in MB (`users.max_storage_bytes`,
+`NULL` = unlimited). `POST /files` checks the owner's cap against their current usage
+— summed fresh from `files.size_bytes` on every upload rather than kept as a running
+counter, since a self-hosted instance's file count stays small enough that this is
+cheap and it can never drift — and rejects with `507 Insufficient Storage` if the
+upload would exceed it.
+
 ## Embeds (Discord, Slack, Twitter)
 
 Every share link already works as a direct image/video link — paste one in Discord

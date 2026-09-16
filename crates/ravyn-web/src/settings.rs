@@ -1,11 +1,12 @@
 use leptos::prelude::*;
 
-use crate::format::format_date;
+use crate::format::{format_date, format_size};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_embed_settings, get_instance_settings, get_storage_info, list_api_tokens, list_invites, me,
-    ApiTokenInfo, CreateApiToken, CreateInvite, DeleteApiToken, DeleteInvite, EmbedSettings,
-    InstanceSettings, InviteInfo, SetEmbedSettings, SetInstanceSettings,
+    get_embed_settings, get_instance_settings, get_storage_info, list_api_tokens, list_invites,
+    list_users, me, AdminUserInfo, ApiTokenInfo, CreateApiToken, CreateInvite, DeleteApiToken,
+    DeleteInvite, EmbedSettings, InstanceSettings, InviteInfo, SetEmbedSettings,
+    SetInstanceSettings, SetUserLimit,
 };
 
 #[component]
@@ -76,6 +77,7 @@ fn AdminControls() -> impl IntoView {
                 }}
             </Suspense>
         </div>
+        <UsersSection/>
     }
 }
 
@@ -221,6 +223,113 @@ fn InviteRow(invite: InviteInfo, delete_action: ServerAction<DeleteInvite>) -> i
             >
                 <TrashIcon/>
             </button>
+        </li>
+    }
+}
+
+/// A storage quota per user (chibisafe/Zipline both call this a "limit" or
+/// "quota") — the one admin control the instance actually needs day to day,
+/// as opposed to a full user-management CRUD screen nobody self-hosting
+/// this at their own scale is likely to need.
+#[component]
+fn UsersSection() -> impl IntoView {
+    let limit_action = ServerAction::<SetUserLimit>::new();
+    let users = Resource::new(move || limit_action.version().get(), |_| list_users());
+
+    view! {
+        <div class="settings-section">
+            <h3>"users"</h3>
+            <p class="settings-hint">
+                "everyone with an account on this instance, and how much they've stored. "
+                "leave a limit blank (or hit \"remove limit\") for unlimited."
+            </p>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    users
+                        .get()
+                        .map(|result| match result {
+                            Ok(users) => {
+                                view! {
+                                    <ul class="token-list">
+                                        {users
+                                            .into_iter()
+                                            .map(|info| view! { <UserRow info limit_action /> })
+                                            .collect_view()}
+                                    </ul>
+                                }
+                                    .into_any()
+                            }
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load users"</p> }.into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+const MIB: i64 = 1024 * 1024;
+
+#[component]
+fn UserRow(info: AdminUserInfo, limit_action: ServerAction<SetUserLimit>) -> impl IntoView {
+    let id = info.id.clone();
+    let id_for_clear = info.id.clone();
+    let current_mib = info.max_storage_bytes.map(|bytes| (bytes / MIB).max(1));
+    let (limit_input, set_limit_input) =
+        signal(current_mib.map(|mib| mib.to_string()).unwrap_or_default());
+    let used = format_size(info.storage_used_bytes.max(0) as u64);
+    let limit_display = match info.max_storage_bytes {
+        Some(bytes) => format_size(bytes.max(0) as u64),
+        None => "unlimited".to_string(),
+    };
+
+    view! {
+        <li class="token-row">
+            <div>
+                <p class="token-name">
+                    {info.username.clone()}
+                    {info.is_admin.then_some(" · admin")}
+                </p>
+                <p class="file-sub">{used} " used of " {limit_display}</p>
+            </div>
+            <div class="user-row-actions">
+                <form
+                    class="password-inline"
+                    on:submit=move |ev| {
+                        ev.prevent_default();
+                        let mib: i64 = limit_input.get().trim().parse().unwrap_or(0);
+                        limit_action
+                            .dispatch(SetUserLimit {
+                                id: id.clone(),
+                                max_storage_bytes: (mib > 0).then_some(mib * MIB),
+                            });
+                    }
+                >
+                    <input
+                        type="text"
+                        inputmode="numeric"
+                        placeholder="limit in MB"
+                        prop:value=move || limit_input.get()
+                        on:input=move |ev| set_limit_input.set(event_target_value(&ev))
+                    />
+                    <button type="submit" class="btn btn-ghost">
+                        "save"
+                    </button>
+                </form>
+                <button
+                    class="btn btn-ghost"
+                    on:click=move |_| {
+                        limit_action
+                            .dispatch(SetUserLimit {
+                                id: id_for_clear.clone(),
+                                max_storage_bytes: None,
+                            });
+                    }
+                >
+                    "remove limit"
+                </button>
+            </div>
         </li>
     }
 }

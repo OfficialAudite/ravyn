@@ -153,6 +153,27 @@ pub async fn upload_file(
         }
     };
 
+    match state.db.get_max_storage_bytes(user.id).await {
+        Ok(Some(max)) => {
+            let used = match state.db.get_storage_usage(user.id).await {
+                Ok(used) => used,
+                Err(err) => {
+                    tracing::error!(%err, "failed to check storage usage");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            };
+            if used + bytes.len() as i64 > max {
+                return (StatusCode::INSUFFICIENT_STORAGE, "storage limit exceeded")
+                    .into_response();
+            }
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::error!(%err, "failed to check storage quota");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
     let sha256 = hex::encode(Sha256::digest(&bytes));
     let storage_key = format!("{}/{}", user.id.0, Uuid::new_v4());
 

@@ -465,3 +465,64 @@ pub async fn delete_invite(id: String) -> Result<(), ServerFnError> {
 
     Ok(())
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdminUserInfo {
+    pub id: String,
+    pub username: String,
+    pub is_admin: bool,
+    pub created_at: String,
+    pub storage_used_bytes: i64,
+    pub max_storage_bytes: Option<i64>,
+}
+
+#[server]
+pub async fn list_users() -> Result<Vec<AdminUserInfo>, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/users", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("not authorized"));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[server]
+pub async fn set_user_limit(
+    id: String,
+    max_storage_bytes: Option<i64>,
+) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .put(format!("{}/admin/users/{id}/limit", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .json(&serde_json::json!({ "max_storage_bytes": max_storage_bytes }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("failed to save storage limit"));
+    }
+
+    Ok(())
+}

@@ -714,6 +714,22 @@ input[type="password"]:focus {
   font-size: 0.75rem;
 }
 
+.user-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.user-row-actions .password-inline {
+  margin-top: 0;
+}
+
+.user-row-actions .password-inline input {
+  flex: none;
+  width: 90px;
+}
+
 .folder-view-title {
   font-family: var(--font-display);
   font-weight: 600;

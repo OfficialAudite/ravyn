@@ -46,6 +46,8 @@ pub fn router(state: AppState) -> Router {
         .route("/invites", post(account::create_invite))
         .route("/invites", get(account::list_invites))
         .route("/invites/{id}", delete(account::delete_invite))
+        .route("/admin/users", get(account::list_users))
+        .route("/admin/users/{id}/limit", put(account::set_user_limit))
         .route("/v/{id}", get(view::view_file))
         .with_state(state)
 }

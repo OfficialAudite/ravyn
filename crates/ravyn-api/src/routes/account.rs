@@ -346,6 +346,79 @@ pub async fn delete_invite(
     StatusCode::NO_CONTENT.into_response()
 }
 
+#[derive(Serialize)]
+pub struct AdminUserSummary {
+    id: Uuid,
+    username: String,
+    is_admin: bool,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    storage_used_bytes: i64,
+    max_storage_bytes: Option<i64>,
+}
+
+/// Every account on the instance with its current storage usage — an
+/// admin's view of who's using what, and the basis for setting limits.
+/// Usage is computed per user rather than fetched in one join here; at the
+/// scale a self-hosted instance runs at, N+1 simple indexed queries costs
+/// nothing and keeps this handler from having to know how that join works.
+pub async fn list_users(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let users = match state.db.list_users().await {
+        Ok(users) => users,
+        Err(err) => {
+            tracing::error!(%err, "failed to list users");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let mut summaries = Vec::with_capacity(users.len());
+    for u in users {
+        let storage_used_bytes = state.db.get_storage_usage(u.id).await.unwrap_or(0);
+        let max_storage_bytes = state.db.get_max_storage_bytes(u.id).await.unwrap_or(None);
+        summaries.push(AdminUserSummary {
+            id: u.id.0,
+            username: u.username,
+            is_admin: u.is_admin,
+            created_at: u.created_at,
+            storage_used_bytes,
+            max_storage_bytes,
+        });
+    }
+
+    Json(summaries).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SetUserLimitRequest {
+    max_storage_bytes: Option<i64>,
+}
+
+pub async fn set_user_limit(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetUserLimitRequest>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    if let Err(err) = state
+        .db
+        .set_max_storage_bytes(UserId(id), body.max_storage_bytes)
+        .await
+    {
+        tracing::error!(%err, "failed to set storage limit");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 #[derive(Deserialize)]
 pub struct CreateApiTokenRequest {
     name: String,
