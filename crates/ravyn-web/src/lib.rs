@@ -1,8 +1,18 @@
+// The dashboard's view tree (folder sidebar + filter bar + file grid + token
+// form, each with several nested components) nests deep enough in Leptos's
+// typed-view system to blow the compiler's default query recursion limit —
+// this raises it rather than restructuring the component tree just to
+// satisfy the compiler.
+#![recursion_limit = "256"]
+
 pub mod app;
 pub mod browser;
+pub mod dashboard;
 pub mod format;
 pub mod icons;
 pub mod server_fns;
+pub mod settings;
+pub mod shared_folder;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]

@@ -1,3 +1,6 @@
+// See the matching attribute in lib.rs for why.
+#![recursion_limit = "256"]
+
 #[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
@@ -22,6 +25,7 @@ async fn main() {
             get(leptos_axum::handle_server_fns).post(leptos_axum::handle_server_fns),
         )
         .route("/upload", post(upload_proxy))
+        .route("/preview/:id", get(preview_proxy))
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())
@@ -73,6 +77,54 @@ async fn upload_proxy(
         }
         _ => (axum::http::StatusCode::BAD_GATEWAY, "upload failed").into_response(),
     }
+}
+
+/// Proxies the dashboard's own thumbnail previews through `ravyn-web`,
+/// forwarding the session cookie. Needed because a plain `<img src>`
+/// pointing straight at `ravyn-api` would be a cross-origin request that
+/// never carries the cookie — that cookie belongs to `ravyn-web`'s origin
+/// (see `server_fns::ssr::relay_set_cookie`), not `ravyn-api`'s. Without
+/// this, your own password-protected files would show as broken images in
+/// your own dashboard. Public links (copy-link, the shared folder page)
+/// don't need this — they hit `ravyn-api` directly and rely on its own
+/// password gate instead.
+#[cfg(feature = "ssr")]
+async fn preview_proxy(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let api_base =
+        std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
+
+    let mut request = reqwest::Client::new().get(format!("{api_base}/files/{id}/thumbnail"));
+    if let Some(cookie) = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+    {
+        request = request.header("Cookie", cookie);
+    }
+
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(_) => return axum::http::StatusCode::BAD_GATEWAY.into_response(),
+    };
+
+    let status = axum::http::StatusCode::from_u16(response.status().as_u16())
+        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .cloned();
+    let bytes = response.bytes().await.unwrap_or_default();
+
+    let mut headers = axum::http::HeaderMap::new();
+    if let Some(content_type) = content_type {
+        headers.insert(axum::http::header::CONTENT_TYPE, content_type);
+    }
+
+    (status, headers, bytes).into_response()
 }
 
 #[cfg(not(feature = "ssr"))]

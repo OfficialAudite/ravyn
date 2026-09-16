@@ -7,7 +7,7 @@ pub use error::StorageError;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use object_store::{path::Path as ObjectPath, ObjectStore};
+use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
 
 #[derive(Clone)]
 pub struct Storage {
@@ -21,9 +21,20 @@ impl Storage {
         })
     }
 
+    /// Always uploads via `object_store`'s multipart API, even for small
+    /// files (a one-part multipart upload is valid — the 5MiB-per-part
+    /// minimum only applies to parts before the last one). Every S3-
+    /// compatible provider has its own hard limit on a single non-multipart
+    /// PUT (5GiB on AWS itself, often less elsewhere); going through
+    /// multipart uniformly means uploads of any size work the same way
+    /// regardless of backend, without ravyn needing to know each
+    /// provider's specific limits.
     pub async fn put(&self, key: &str, bytes: Bytes) -> Result<(), StorageError> {
         let path = ObjectPath::from(key);
-        self.store.put(&path, bytes.into()).await?;
+        let upload = self.store.put_multipart(&path).await?;
+        let mut writer = WriteMultipart::new(upload);
+        writer.put(bytes);
+        writer.finish().await?;
         Ok(())
     }
 

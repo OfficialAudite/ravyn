@@ -61,6 +61,72 @@ pub fn CheckIcon() -> impl IntoView {
     }
 }
 
+#[component]
+pub fn LockIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <rect x="4" y="11" width="16" height="10" rx="2" />
+            <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        </svg>
+    }
+}
+
+#[component]
+pub fn FolderIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M3 6a1 1 0 0 1 1-1h4.5l2 2H20a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z" />
+        </svg>
+    }
+}
+
+#[component]
+pub fn SearchIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4.3-4.3" />
+        </svg>
+    }
+}
+
+#[component]
+pub fn PlusIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M12 5v14M5 12h14" />
+        </svg>
+    }
+}
+
 /// A file-type glyph for anything that isn't an image (images get a real
 /// thumbnail instead). Picked from the upload's content type.
 #[component]

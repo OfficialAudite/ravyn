@@ -1,4 +1,4 @@
-use ravyn_core::{ApiToken, User, UserId};
+use ravyn_core::{ApiToken, ApiTokenId, User, UserId};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -23,12 +23,36 @@ impl From<UserRow> for User {
     }
 }
 
+#[derive(sqlx::FromRow)]
+struct ApiTokenRow {
+    id: Uuid,
+    token_hash: String,
+    user_id: Uuid,
+    name: String,
+    created_at: OffsetDateTime,
+    last_used_at: Option<OffsetDateTime>,
+}
+
+impl From<ApiTokenRow> for ApiToken {
+    fn from(row: ApiTokenRow) -> Self {
+        ApiToken {
+            id: ApiTokenId(row.id),
+            token_hash: row.token_hash,
+            user_id: UserId(row.user_id),
+            name: row.name,
+            created_at: row.created_at,
+            last_used_at: row.last_used_at,
+        }
+    }
+}
+
 impl Db {
     pub async fn create_api_token(&self, token: &ApiToken) -> Result<(), DbError> {
         sqlx::query(
-            "insert into api_tokens (token_hash, user_id, name, created_at, last_used_at)
-             values ($1, $2, $3, $4, $5)",
+            "insert into api_tokens (id, token_hash, user_id, name, created_at, last_used_at)
+             values ($1, $2, $3, $4, $5, $6)",
         )
+        .bind(token.id.0)
         .bind(&token.token_hash)
         .bind(token.user_id.0)
         .bind(&token.name)
@@ -36,6 +60,38 @@ impl Db {
         .bind(token.last_used_at)
         .execute(&self.pool)
         .await?;
+
+        Ok(())
+    }
+
+    pub async fn list_api_tokens_for_user(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<ApiToken>, DbError> {
+        let rows = sqlx::query_as::<_, ApiTokenRow>(
+            "select * from api_tokens where user_id = $1 order by created_at desc",
+        )
+        .bind(user_id.0)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(ApiToken::from).collect())
+    }
+
+    pub async fn get_api_token(&self, id: ApiTokenId) -> Result<Option<ApiToken>, DbError> {
+        let row = sqlx::query_as::<_, ApiTokenRow>("select * from api_tokens where id = $1")
+            .bind(id.0)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(row.map(ApiToken::from))
+    }
+
+    pub async fn delete_api_token(&self, id: ApiTokenId) -> Result<(), DbError> {
+        sqlx::query("delete from api_tokens where id = $1")
+            .bind(id.0)
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }

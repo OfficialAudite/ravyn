@@ -6,7 +6,8 @@ create table sessions (
 );
 
 create table api_tokens (
-    token_hash text primary key,
+    id uuid primary key,
+    token_hash text not null unique,
     user_id uuid not null references users (id) on delete cascade,
     name text not null,
     created_at timestamptz not null default now(),

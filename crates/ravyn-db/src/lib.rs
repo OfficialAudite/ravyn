@@ -1,6 +1,7 @@
 mod api_tokens;
 mod error;
 mod files;
+mod folders;
 mod sessions;
 mod users;
 

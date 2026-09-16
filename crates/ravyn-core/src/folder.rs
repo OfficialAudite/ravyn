@@ -2,33 +2,28 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{FolderId, UserId};
+use crate::UserId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FileId(pub Uuid);
+pub struct FolderId(pub Uuid);
 
-impl FileId {
+impl FolderId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
 }
 
-impl Default for FileId {
+impl Default for FolderId {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct File {
-    pub id: FileId,
+pub struct Folder {
+    pub id: FolderId,
     pub owner_id: UserId,
-    pub original_name: String,
-    pub storage_key: String,
-    pub content_type: String,
-    pub size_bytes: u64,
-    pub sha256: String,
-    pub folder_id: Option<FolderId>,
+    pub name: String,
     pub password_hash: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,

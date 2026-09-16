@@ -1,7 +1,23 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::UserId;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ApiTokenId(pub Uuid);
+
+impl ApiTokenId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for ApiTokenId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// The plaintext API token, e.g. for a ShareX upload config. Only its hash is
 /// ever persisted; this value is shown to the user once, at creation time.
@@ -10,6 +26,7 @@ pub struct ApiTokenValue(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiToken {
+    pub id: ApiTokenId,
     pub token_hash: String,
     pub user_id: UserId,
     pub name: String,
