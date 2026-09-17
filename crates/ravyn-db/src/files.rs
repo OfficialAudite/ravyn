@@ -133,4 +133,14 @@ impl Db {
 
         Ok(())
     }
+
+    pub async fn set_file_name(&self, id: FileId, name: String) -> Result<(), DbError> {
+        sqlx::query("update files set original_name = $2 where id = $1")
+            .bind(id.0)
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
 }

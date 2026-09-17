@@ -113,3 +113,26 @@ pub async fn set_file_password(id: String, password: Option<String>) -> Result<(
 
     Ok(())
 }
+
+#[server]
+pub async fn rename_file(id: String, name: String) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .put(format!("{}/files/{id}/name", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("failed to rename file"));
+    }
+
+    Ok(())
+}

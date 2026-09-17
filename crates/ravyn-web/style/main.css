@@ -1001,13 +1001,23 @@ input[type="color"] {
   gap: 1rem;
 }
 
-.modal-title {
+.modal-rename {
+  display: flex;
+  gap: 0.35rem;
+  padding-right: 1.5rem;
+}
+
+.modal-title-input {
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 1.05rem;
-  margin: 0;
-  padding-right: 1.5rem;
-  overflow-wrap: break-word;
+  padding: 0.3rem 0.5rem;
+}
+
+.modal-rename button {
+  padding: 0.35rem 0.6rem;
 }
 
 .modal-meta {

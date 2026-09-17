@@ -168,6 +168,26 @@ total files, total storage, and the instance-wide type breakdown. Both reuse the
 existing per-owner file list rather than a new aggregate query or any kind of
 stored counter, for the same reason the quota check does.
 
+### File naming
+
+By default a freshly uploaded file keeps whatever name the uploading client sent —
+what chibisafe/Zipline would call the "original" scheme. An admin can change this
+instance-wide from `/admin`'s naming section (`NamingScheme` in `ravyn-core`):
+
+- **original** (default) — keep the uploaded filename.
+- **random** — a random lowercase alphanumeric string, length configurable
+  (`random_name_length`, 4–64, default 8).
+- **uuid** — a fresh UUID.
+- **date** — the upload's UTC timestamp, `YYYYMMDD-HHMMSS`.
+
+Every scheme but `original` keeps the original extension, so a generated name still
+opens in the right application. This only picks the *display* name
+(`files.original_name`) — the shareable link is always `/v/{uuid}` regardless of
+scheme. Whatever name gets assigned at upload is just the default, not final: anyone
+can rename their own file afterward from the file detail modal (`PUT
+/files/{id}/name`, checked against the file's owner the same way
+`/files/{id}/password` is).
+
 ## Embeds (Discord, Slack, Twitter)
 
 Every share link already works as a direct image/video link — paste one in Discord

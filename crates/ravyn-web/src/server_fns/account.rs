@@ -332,6 +332,8 @@ pub async fn get_storage_info() -> Result<StorageInfo, ServerFnError> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstanceSettings {
     pub registration_mode: String,
+    pub naming_scheme: String,
+    pub random_name_length: i64,
 }
 
 #[server]
@@ -359,8 +361,16 @@ pub async fn get_instance_settings() -> Result<InstanceSettings, ServerFnError> 
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
+/// Every argument optional so the registration form and the naming-scheme
+/// form (two independent forms on the same admin page) can each save just
+/// their own setting without clobbering the other's — mirrors
+/// `SetInstanceSettingsRequest` on the API side.
 #[server]
-pub async fn set_instance_settings(registration_mode: String) -> Result<(), ServerFnError> {
+pub async fn set_instance_settings(
+    registration_mode: Option<String>,
+    naming_scheme: Option<String>,
+    random_name_length: Option<i64>,
+) -> Result<(), ServerFnError> {
     use crate::server_fns::ssr;
 
     let cookie = ssr::incoming_cookie()
@@ -370,13 +380,17 @@ pub async fn set_instance_settings(registration_mode: String) -> Result<(), Serv
     let response = reqwest::Client::new()
         .put(format!("{}/instance-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
-        .json(&serde_json::json!({ "registration_mode": registration_mode }))
+        .json(&serde_json::json!({
+            "registration_mode": registration_mode,
+            "naming_scheme": naming_scheme,
+            "random_name_length": random_name_length,
+        }))
         .send()
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))?;
 
     if !response.status().is_success() {
-        return Err(ServerFnError::new("failed to save registration mode"));
+        return Err(ServerFnError::new("failed to save instance settings"));
     }
 
     Ok(())

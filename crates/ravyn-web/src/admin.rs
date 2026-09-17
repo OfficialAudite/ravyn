@@ -74,6 +74,7 @@ fn AdminTabs() -> impl IntoView {
                 view! {
                     <InstanceStatsSection/>
                     <RegistrationSection/>
+                    <NamingSchemeSection/>
                 }
                     .into_any()
             }
@@ -185,7 +186,9 @@ fn RegistrationModeForm(
                 ev.prevent_default();
                 mode_action
                     .dispatch(SetInstanceSettings {
-                        registration_mode: mode.get(),
+                        registration_mode: Some(mode.get()),
+                        naming_scheme: None,
+                        random_name_length: None,
                     });
             }
         >
@@ -221,6 +224,115 @@ fn RegistrationModeForm(
             }}
         </form>
         {move || { (mode.get() == "invite").then(|| view! { <InvitesSection/> }) }}
+    }
+}
+
+#[component]
+fn NamingSchemeSection() -> impl IntoView {
+    let scheme_action = ServerAction::<SetInstanceSettings>::new();
+    let settings = Resource::new(
+        move || scheme_action.version().get(),
+        |_| get_instance_settings(),
+    );
+
+    view! {
+        <div class="settings-section">
+            <h3>"file naming"</h3>
+            <p class="settings-hint">
+                "what a freshly uploaded file gets called by default, instance-wide. "
+                "anyone can still rename their own files afterward from the file's details."
+            </p>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    settings
+                        .get()
+                        .map(|result| match result {
+                            Ok(settings) => view! { <NamingSchemeForm settings scheme_action /> }
+                                .into_any(),
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load naming settings"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn NamingSchemeForm(
+    settings: InstanceSettings,
+    scheme_action: ServerAction<SetInstanceSettings>,
+) -> impl IntoView {
+    let (scheme, set_scheme) = signal(settings.naming_scheme);
+    let (length_input, set_length_input) = signal(settings.random_name_length.to_string());
+
+    view! {
+        <form
+            class="embed-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                let length: i64 = length_input.get().trim().parse().unwrap_or(8);
+                scheme_action
+                    .dispatch(SetInstanceSettings {
+                        registration_mode: None,
+                        naming_scheme: Some(scheme.get()),
+                        random_name_length: Some(length),
+                    });
+            }
+        >
+            <div class="field">
+                <label for="naming-scheme">"naming scheme"</label>
+                <select
+                    id="naming-scheme"
+                    class="folder-select"
+                    on:change=move |ev| set_scheme.set(event_target_value(&ev))
+                >
+                    <option value="original" selected=move || scheme.get() == "original">
+                        "original — keep the uploaded filename"
+                    </option>
+                    <option value="random" selected=move || scheme.get() == "random">
+                        "random — a random string"
+                    </option>
+                    <option value="uuid" selected=move || scheme.get() == "uuid">
+                        "uuid"
+                    </option>
+                    <option value="date" selected=move || scheme.get() == "date">
+                        "date and time"
+                    </option>
+                </select>
+            </div>
+            {move || {
+                (scheme.get() == "random")
+                    .then(|| {
+                        view! {
+                            <div class="field">
+                                <label for="random-name-length">"random name length"</label>
+                                <input
+                                    id="random-name-length"
+                                    type="text"
+                                    inputmode="numeric"
+                                    prop:value=move || length_input.get()
+                                    on:input=move |ev| set_length_input.set(event_target_value(&ev))
+                                />
+                            </div>
+                        }
+                    })
+            }}
+            <button type="submit" class="btn btn-primary">
+                "save"
+            </button>
+            {move || {
+                scheme_action
+                    .value()
+                    .get()
+                    .map(|result| match result {
+                        Ok(_) => view! { <p class="settings-hint">"saved."</p> }.into_any(),
+                        Err(err) => view! { <p class="form-error">{err.to_string()}</p> }.into_any(),
+                    })
+            }}
+        </form>
     }
 }
 

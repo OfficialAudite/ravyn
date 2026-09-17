@@ -9,8 +9,8 @@ use crate::icons::{
 };
 use crate::server_fns::{
     get_registration_status, list_files, list_folders, me, AccountInfo, CreateFolder, DeleteFile,
-    DeleteFolder, FileSummary, FolderSummary, Login, Logout, MoveFileToFolder, SetFilePassword,
-    SetFolderPassword,
+    DeleteFolder, FileSummary, FolderSummary, Login, Logout, MoveFileToFolder, RenameFile,
+    SetFilePassword, SetFolderPassword,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -104,6 +104,7 @@ pub struct Actions {
     delete_file: ServerAction<DeleteFile>,
     move_file: ServerAction<MoveFileToFolder>,
     file_password: ServerAction<SetFilePassword>,
+    rename_file: ServerAction<RenameFile>,
     create_folder: ServerAction<CreateFolder>,
     delete_folder: ServerAction<DeleteFolder>,
     folder_password: ServerAction<SetFolderPassword>,
@@ -157,6 +158,7 @@ pub fn DashboardLayout() -> impl IntoView {
         delete_file: ServerAction::new(),
         move_file: ServerAction::new(),
         file_password: ServerAction::new(),
+        rename_file: ServerAction::new(),
         create_folder: ServerAction::new(),
         delete_folder: ServerAction::new(),
         folder_password: ServerAction::new(),
@@ -169,6 +171,7 @@ pub fn DashboardLayout() -> impl IntoView {
             actions.delete_file.version().get(),
             actions.move_file.version().get(),
             actions.file_password.version().get(),
+            actions.rename_file.version().get(),
             actions.create_folder.version().get(),
             actions.delete_folder.version().get(),
             actions.folder_password.version().get(),
@@ -773,6 +776,7 @@ fn FileModal(
 ) -> impl IntoView {
     let (copied, set_copied) = signal(false);
     let (password_input, set_password_input) = signal(String::new());
+    let (name_input, set_name_input) = signal(file.original_name.clone());
 
     let is_image = file.content_type.starts_with("image/");
     let is_video = file.content_type.starts_with("video/");
@@ -782,6 +786,7 @@ fn FileModal(
     let id_for_delete = file.id.clone();
     let id_for_move = file.id.clone();
     let id_for_password = file.id.clone();
+    let id_for_rename = file.id.clone();
     let current_folder = file.folder_id.clone();
     let has_password = file.has_password;
     let short_hash = file.sha256.get(..12).unwrap_or(&file.sha256).to_string();
@@ -820,9 +825,31 @@ fn FileModal(
                 </div>
 
                 <div class="modal-body">
-                    <h3 class="modal-title" title=file.original_name.clone()>
-                        {file.original_name.clone()}
-                    </h3>
+                    <form
+                        class="modal-rename"
+                        on:submit=move |ev| {
+                            ev.prevent_default();
+                            let name = name_input.get();
+                            if !name.trim().is_empty() {
+                                actions
+                                    .rename_file
+                                    .dispatch(RenameFile {
+                                        id: id_for_rename.clone(),
+                                        name,
+                                    });
+                            }
+                        }
+                    >
+                        <input
+                            class="modal-title-input"
+                            type="text"
+                            prop:value=move || name_input.get()
+                            on:input=move |ev| set_name_input.set(event_target_value(&ev))
+                        />
+                        <button type="submit" class="btn btn-ghost" title="save name">
+                            <CheckIcon/>
+                        </button>
+                    </form>
 
                     <dl class="modal-meta">
                         <div>

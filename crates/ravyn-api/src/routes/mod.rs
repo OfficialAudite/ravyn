@@ -24,6 +24,7 @@ pub fn router(state: AppState) -> Router {
         .route("/files/{id}/thumbnail", get(files::get_file_thumbnail))
         .route("/files/{id}/folder", put(files::set_file_folder))
         .route("/files/{id}/password", put(files::set_file_password))
+        .route("/files/{id}/name", put(files::set_file_name))
         .route("/files", get(files::list_files))
         .route("/files", post(files::upload_file))
         .route("/folders", post(folders::create_folder))

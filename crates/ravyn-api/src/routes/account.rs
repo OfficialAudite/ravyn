@@ -9,8 +9,8 @@ use axum_extra::extract::{
     CookieJar,
 };
 use ravyn_core::{
-    auth as core_auth, ApiToken, ApiTokenId, EmbedSettings, Invite, InviteId, RegistrationMode,
-    User, UserId,
+    auth as core_auth, ApiToken, ApiTokenId, EmbedSettings, Invite, InviteId, NamingScheme,
+    RegistrationMode, User, UserId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -221,9 +221,14 @@ pub async fn me(AuthedUser(user): AuthedUser) -> Response {
         .into_response()
 }
 
+/// Every field optional so the registration form and the naming-scheme form
+/// (two independent forms on the same admin page) can each save just their
+/// own settings without clobbering the other's.
 #[derive(Deserialize)]
 pub struct SetInstanceSettingsRequest {
-    registration_mode: String,
+    registration_mode: Option<String>,
+    naming_scheme: Option<String>,
+    random_name_length: Option<i64>,
 }
 
 pub async fn get_instance_settings(
@@ -234,14 +239,35 @@ pub async fn get_instance_settings(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    match state.db.get_registration_mode().await {
-        Ok(mode) => Json(serde_json::json!({ "registration_mode": mode.as_str() })).into_response(),
+    let mode = match state.db.get_registration_mode().await {
+        Ok(mode) => mode,
         Err(err) => {
             tracing::error!(%err, "failed to load registration mode");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-    }
+    };
+    let naming_scheme = match state.db.get_naming_scheme().await {
+        Ok(scheme) => scheme,
+        Err(err) => {
+            tracing::error!(%err, "failed to load naming scheme");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let random_name_length = state.db.get_random_name_length().await.unwrap_or(8);
+
+    Json(serde_json::json!({
+        "registration_mode": mode.as_str(),
+        "naming_scheme": naming_scheme.as_str(),
+        "random_name_length": random_name_length,
+    }))
+    .into_response()
 }
+
+/// Clamped rather than rejected: a stray very-short or very-long value from
+/// a hand-edited request is a nuisance, not something worth failing an
+/// otherwise-valid save over.
+const MIN_RANDOM_NAME_LENGTH: i64 = 4;
+const MAX_RANDOM_NAME_LENGTH: i64 = 64;
 
 pub async fn set_instance_settings(
     AuthedUser(user): AuthedUser,
@@ -252,13 +278,32 @@ pub async fn set_instance_settings(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let Some(mode) = RegistrationMode::parse(&body.registration_mode) else {
-        return (StatusCode::BAD_REQUEST, "invalid registration mode").into_response();
-    };
+    if let Some(raw_mode) = body.registration_mode {
+        let Some(mode) = RegistrationMode::parse(&raw_mode) else {
+            return (StatusCode::BAD_REQUEST, "invalid registration mode").into_response();
+        };
+        if let Err(err) = state.db.set_registration_mode(mode).await {
+            tracing::error!(%err, "failed to save registration mode");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
 
-    if let Err(err) = state.db.set_registration_mode(mode).await {
-        tracing::error!(%err, "failed to save registration mode");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    if let Some(raw_scheme) = body.naming_scheme {
+        let Some(scheme) = NamingScheme::parse(&raw_scheme) else {
+            return (StatusCode::BAD_REQUEST, "invalid naming scheme").into_response();
+        };
+        if let Err(err) = state.db.set_naming_scheme(scheme).await {
+            tracing::error!(%err, "failed to save naming scheme");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    if let Some(length) = body.random_name_length {
+        let length = length.clamp(MIN_RANDOM_NAME_LENGTH, MAX_RANDOM_NAME_LENGTH);
+        if let Err(err) = state.db.set_random_name_length(length).await {
+            tracing::error!(%err, "failed to save random name length");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     }
 
     StatusCode::NO_CONTENT.into_response()

@@ -138,11 +138,22 @@ async fn save_uploaded_part(
     owner_id: ravyn_core::UserId,
     field: axum::extract::multipart::Field<'_>,
 ) -> Result<File, (StatusCode, String)> {
-    let original_name = field.file_name().unwrap_or("upload").to_string();
+    let uploaded_name = field.file_name().unwrap_or("upload").to_string();
     let content_type = field
         .content_type()
         .unwrap_or("application/octet-stream")
         .to_string();
+
+    // Instance-wide, admin-configurable: what a freshly uploaded file gets
+    // called by default. Falls back to keeping the uploader's own filename
+    // on any lookup error, same as every other settings read on this path.
+    let naming_scheme = state
+        .db
+        .get_naming_scheme()
+        .await
+        .unwrap_or(ravyn_core::NamingScheme::Original);
+    let random_name_length = state.db.get_random_name_length().await.unwrap_or(8);
+    let original_name = naming_scheme.generate(&uploaded_name, random_name_length as usize);
 
     if content_type.starts_with("image/") {
         save_buffered_part(state, owner_id, field, original_name, content_type).await
@@ -551,6 +562,46 @@ pub async fn set_file_password(
 
     if let Err(err) = state.db.set_file_password(file.id, hash).await {
         tracing::error!(%err, "failed to set file password");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SetFileNameRequest {
+    name: String,
+}
+
+/// Manual per-upload naming control: whatever the instance's naming scheme
+/// assigned at upload time is just the default, not the last word — the
+/// owner can always override it here.
+pub async fn set_file_name(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetFileNameRequest>,
+) -> Response {
+    let file = match state.db.get_file(FileId(id)).await {
+        Ok(Some(file)) => file,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to look up file");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if file.owner_id != user.id {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "name cannot be empty").into_response();
+    }
+
+    if let Err(err) = state.db.set_file_name(file.id, name).await {
+        tracing::error!(%err, "failed to rename file");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
