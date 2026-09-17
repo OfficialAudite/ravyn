@@ -20,6 +20,15 @@ deliberate: you should be able to fork this repo and rip out or replace a whole 
 (swap `ravyn-web` for a different frontend, swap `ravyn-storage`'s backend, etc.)
 without touching the rest.
 
+- [Running locally](#running-locally)
+- [Storage backends](#storage-backends)
+- [Auth](#auth)
+- [Embeds (Discord, Slack, Twitter)](#embeds-discord-slack-twitter)
+- [Folders, passwords, previews](#folders-passwords-previews)
+- [Web UI pages](#web-ui-pages)
+- [Docker](#docker)
+- [Extending it](#extending-it)
+
 ## Running locally
 
 You need Postgres reachable via `DATABASE_URL`.
@@ -199,13 +208,21 @@ everything else per-owner.
   whenever the request carries the owner's own session or API token
   (`routes::is_authorized` in `ravyn-api`).
 - **Thumbnails** are generated at upload time for images (`crates/ravyn-api/src/routes/files.rs`,
-  `generate_thumbnail`) and served separately from the original
+  `generate_thumbnail`) as AVIF, and served separately from the original
   (`GET /files/{id}/thumbnail`), so the gallery grid never has to pull a full-size
-  original just to render a 170px preview.
+  original just to render a small preview.
 - The browse page's search box, type filter, and sort order are all client-side over
   the already-fetched file list (`crates/ravyn-web/src/dashboard.rs`) — there's no
   server-side filtering API, on the assumption that a self-hosted instance's file count
   stays in the range where that's fine.
+- **Clicking a thumbnail** opens a detail modal (`FileCard`/`FileModal` in
+  `crates/ravyn-web/src/dashboard.rs`) instead of navigating away — the same
+  "click a thumbnail, get a modal" shape chibisafe and Zipline both use. It shows a
+  full-size inline preview (image/video/audio, or a file-type icon for anything
+  else), the file's size/type/upload date/sha256, and lets you assign it to a
+  folder, set or clear its password, copy the share link, download it, or delete it,
+  all without leaving the grid. The grid card itself keeps just a thumbnail, name,
+  and two hover-only quick actions (copy link, delete).
 
 ## Web UI pages
 
@@ -262,5 +279,10 @@ instead for thumbnails and download links, since it can't resolve the `api` host
   `crates/ravyn-web/src/server_fns/` (it forwards to the API and relays cookies for
   you). For a new *page*, add a component and a nested `<Route>` in `app.rs` — reach the
   shared file/folder state via `expect_context::<dashboard::DashboardContext>()`, no
-  need to re-fetch. `dashboard.rs` holds the owner's pages, `settings.rs` the settings
-  page, `shared_folder.rs` the public one.
+  need to re-fetch. `dashboard.rs` holds the browse/upload pages, `settings.rs` the
+  per-user settings page, `admin.rs` the admin-only page, `register.rs` and
+  `shared_folder.rs` the two public (unauthenticated) pages.
+- **New settings/admin tab**: both `/settings` and `/admin` are a `RwSignal`-backed
+  tab enum plus a `match` over it (`SettingsTab` in `settings.rs`, `AdminTab` in
+  `admin.rs`) — add a variant, a `.settings-tab` button, and a match arm rendering
+  whatever section component you add.
