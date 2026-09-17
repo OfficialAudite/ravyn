@@ -221,6 +221,45 @@ pub async fn me(AuthedUser(user): AuthedUser) -> Response {
         .into_response()
 }
 
+#[derive(Deserialize)]
+pub struct ChangePasswordRequest {
+    current_password: String,
+    new_password: String,
+}
+
+/// Requires the current password rather than trusting the session alone —
+/// the same reasoning most services have for this, since a session cookie
+/// can outlive the moment someone meant to be signed in (a shared machine,
+/// a stolen cookie) in a way a freshly-typed password can't.
+pub async fn change_password(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Response {
+    if !core_auth::verify_password(&body.current_password, &user.password_hash) {
+        return (StatusCode::UNAUTHORIZED, "current password is incorrect").into_response();
+    }
+
+    if body.new_password.is_empty() {
+        return (StatusCode::BAD_REQUEST, "new password is required").into_response();
+    }
+
+    let password_hash = match core_auth::hash_password(&body.new_password) {
+        Ok(hash) => hash,
+        Err(err) => {
+            tracing::error!(%err, "failed to hash password");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if let Err(err) = state.db.set_password_hash(user.id, password_hash).await {
+        tracing::error!(%err, "failed to save new password");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// Every field optional so the registration form and the naming-scheme form
 /// (two independent forms on the same admin page) can each save just their
 /// own settings without clobbering the other's.

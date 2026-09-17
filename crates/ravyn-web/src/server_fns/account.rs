@@ -125,6 +125,38 @@ pub async fn me() -> Result<AccountInfo, ServerFnError> {
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
+#[server]
+pub async fn change_password(
+    current_password: String,
+    new_password: String,
+) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .put(format!("{}/me/password", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .json(&serde_json::json!({
+            "current_password": current_password,
+            "new_password": new_password,
+        }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(ServerFnError::new("current password is incorrect"));
+    }
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("failed to change password"));
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreatedApiToken {
     pub token: String,

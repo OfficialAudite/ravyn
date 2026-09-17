@@ -148,6 +148,12 @@ in, ready to import. [`contrib/sharex/ravyn.sxcu`](contrib/sharex/ravyn.sxcu) is
 as a plain reference for anyone configuring ShareX by hand instead (e.g. scripting a
 headless setup) — replace `YOUR_API_TOKEN` there yourself.
 
+Anyone can change their own password from `/settings` (`PUT /me/password`,
+`{"current_password", "new_password"}`) — requires the current password even though
+the request is already authenticated by the session cookie, the same reasoning most
+services have for asking again: a session can outlive the moment someone meant to be
+signed in.
+
 ### Per-user storage quotas
 
 `/admin` shows every account on the instance with its current storage usage, and a

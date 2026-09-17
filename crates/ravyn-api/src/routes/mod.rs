@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/register", post(account::register))
         .route("/registration-status", get(account::registration_status))
         .route("/me", get(account::me))
+        .route("/me/password", put(account::change_password))
         .route("/me/stats", get(account::my_stats))
         .route("/api-tokens", post(account::create_api_token))
         .route("/api-tokens", get(account::list_api_tokens))

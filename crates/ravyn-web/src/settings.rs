@@ -4,7 +4,7 @@ use crate::format::{format_date, format_size, format_type_breakdown};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
     get_embed_settings, get_my_stats, get_storage_info, list_api_tokens, ApiTokenInfo,
-    CreateApiToken, DeleteApiToken, EmbedSettings, SetEmbedSettings,
+    ChangePassword, CreateApiToken, DeleteApiToken, EmbedSettings, SetEmbedSettings,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -281,7 +281,89 @@ fn AccountSection() -> impl IntoView {
                         })
                 }}
             </Suspense>
+            <ChangePasswordForm/>
         </div>
+    }
+}
+
+#[component]
+fn ChangePasswordForm() -> impl IntoView {
+    let change_password = ServerAction::<ChangePassword>::new();
+    let (current_password, set_current_password) = signal(String::new());
+    let (new_password, set_new_password) = signal(String::new());
+    let (confirm_password, set_confirm_password) = signal(String::new());
+    let (mismatch, set_mismatch) = signal(false);
+
+    view! {
+        <form
+            class="embed-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                if new_password.get() != confirm_password.get() {
+                    set_mismatch.set(true);
+                    return;
+                }
+                set_mismatch.set(false);
+                change_password
+                    .dispatch(ChangePassword {
+                        current_password: current_password.get(),
+                        new_password: new_password.get(),
+                    });
+                set_current_password.set(String::new());
+                set_new_password.set(String::new());
+                set_confirm_password.set(String::new());
+            }
+        >
+            <div class="field">
+                <label for="current-password">"current password"</label>
+                <input
+                    id="current-password"
+                    type="password"
+                    autocomplete="current-password"
+                    prop:value=move || current_password.get()
+                    on:input=move |ev| set_current_password.set(event_target_value(&ev))
+                />
+            </div>
+            <div class="field">
+                <label for="new-password">"new password"</label>
+                <input
+                    id="new-password"
+                    type="password"
+                    autocomplete="new-password"
+                    prop:value=move || new_password.get()
+                    on:input=move |ev| set_new_password.set(event_target_value(&ev))
+                />
+            </div>
+            <div class="field">
+                <label for="confirm-password">"confirm new password"</label>
+                <input
+                    id="confirm-password"
+                    type="password"
+                    autocomplete="new-password"
+                    prop:value=move || confirm_password.get()
+                    on:input=move |ev| set_confirm_password.set(event_target_value(&ev))
+                />
+            </div>
+            <button type="submit" class="btn btn-primary">
+                "change password"
+            </button>
+            {move || {
+                mismatch
+                    .get()
+                    .then(|| view! { <p class="form-error">"new passwords don't match."</p> })
+            }}
+            {move || {
+                change_password
+                    .value()
+                    .get()
+                    .map(|result| match result {
+                        Ok(_) => {
+                            view! { <p class="settings-hint">"password changed."</p> }.into_any()
+                        }
+                        Err(err) => view! { <p class="form-error">{err.to_string()}</p> }.into_any(),
+                    })
+            }}
+        </form>
     }
 }
 

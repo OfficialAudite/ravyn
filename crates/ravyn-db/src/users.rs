@@ -125,6 +125,20 @@ impl Db {
         Ok(())
     }
 
+    pub async fn set_password_hash(
+        &self,
+        user_id: UserId,
+        password_hash: String,
+    ) -> Result<(), DbError> {
+        sqlx::query("update users set password_hash = $2 where id = $1")
+            .bind(user_id.0)
+            .bind(password_hash)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn get_embed_settings(&self, user_id: UserId) -> Result<EmbedSettings, DbError> {
         #[derive(sqlx::FromRow)]
         struct Row {
