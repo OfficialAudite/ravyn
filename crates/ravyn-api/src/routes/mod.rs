@@ -66,6 +66,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/users", get(account::list_users))
         .route("/admin/users/{id}/limit", put(account::set_user_limit))
         .route("/admin/stats", get(account::admin_stats))
+        .route("/admin/activity", get(account::list_activity))
         .route("/v/{id}", get(view::view_file))
         .route("/short-urls", post(shorten::create_short_url))
         .route("/short-urls", get(shorten::list_short_urls))

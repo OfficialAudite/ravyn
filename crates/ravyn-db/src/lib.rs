@@ -1,3 +1,4 @@
+mod activity;
 mod api_tokens;
 mod chunked_uploads;
 mod error;

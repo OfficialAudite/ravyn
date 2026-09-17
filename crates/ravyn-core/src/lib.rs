@@ -1,5 +1,6 @@
 pub mod auth;
 
+mod activity;
 mod api_token;
 mod chunked_upload;
 mod embed;
@@ -15,6 +16,7 @@ mod session;
 mod short_url;
 mod user;
 
+pub use activity::ActivityLogEntry;
 pub use api_token::{ApiToken, ApiTokenId, ApiTokenValue};
 pub use chunked_upload::{ChunkedUpload, ChunkedUploadId};
 pub use embed::EmbedSettings;

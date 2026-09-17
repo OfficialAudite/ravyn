@@ -858,3 +858,37 @@ pub async fn get_admin_stats() -> Result<InstanceStats, ServerFnError> {
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActivityLogEntry {
+    pub id: String,
+    pub username: String,
+    pub action: String,
+    pub target: Option<String>,
+    pub created_at: String,
+}
+
+#[server]
+pub async fn list_activity() -> Result<Vec<ActivityLogEntry>, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/activity", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("not authorized"));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
+}

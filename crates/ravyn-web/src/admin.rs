@@ -3,14 +3,15 @@ use leptos::prelude::*;
 use crate::format::{format_date, format_size, format_type_breakdown, EXPIRY_PRESETS};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_admin_stats, get_instance_settings, list_invites, list_users, AdminUserInfo, CreateInvite,
-    DeleteInvite, InstanceSettings, InviteInfo, SetInstanceSettings, SetUserLimit,
+    get_admin_stats, get_instance_settings, list_activity, list_invites, list_users, AdminUserInfo,
+    CreateInvite, DeleteInvite, InstanceSettings, InviteInfo, SetInstanceSettings, SetUserLimit,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AdminTab {
     General,
     Users,
+    Activity,
 }
 
 /// A separate page rather than a section of `/settings` — instance-wide
@@ -68,6 +69,13 @@ fn AdminTabs() -> impl IntoView {
             >
                 "users"
             </button>
+            <button
+                class="settings-tab"
+                class:active=move || tab.get() == AdminTab::Activity
+                on:click=move |_| tab.set(AdminTab::Activity)
+            >
+                "activity"
+            </button>
         </div>
         {move || match tab.get() {
             AdminTab::General => {
@@ -81,6 +89,7 @@ fn AdminTabs() -> impl IntoView {
                     .into_any()
             }
             AdminTab::Users => view! { <UsersSection/> }.into_any(),
+            AdminTab::Activity => view! { <ActivitySection/> }.into_any(),
         }}
     }
 }
@@ -712,6 +721,72 @@ fn UserRow(info: AdminUserInfo, limit_action: ServerAction<SetUserLimit>) -> imp
                 >
                     "remove limit"
                 </button>
+            </div>
+        </li>
+    }
+}
+
+/// The most recent 200 events across the whole instance - who uploaded or
+/// deleted what, who logged in, what an admin changed. No filtering or
+/// pagination: at self-hosted scale, scrolling a plain list of the last
+/// 200 entries is plenty, and it's a lot less to build than either.
+#[component]
+fn ActivitySection() -> impl IntoView {
+    let entries = Resource::new(|| (), |_| list_activity());
+
+    view! {
+        <div class="settings-section">
+            <h3>"activity"</h3>
+            <p class="settings-hint">"the most recent 200 events on this instance."</p>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    entries
+                        .get()
+                        .map(|result| match result {
+                            Ok(entries) if entries.is_empty() => {
+                                view! { <p class="settings-hint">"nothing yet."</p> }.into_any()
+                            }
+                            Ok(entries) => {
+                                view! {
+                                    <ul class="token-list">
+                                        {entries
+                                            .into_iter()
+                                            .map(|entry| view! { <ActivityRow entry /> })
+                                            .collect_view()}
+                                    </ul>
+                                }
+                                    .into_any()
+                            }
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load activity"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+/// Slices an RFC3339 timestamp down to minute precision and swaps the `T`
+/// for a space - readable at a glance, and enough to tell two events on
+/// the same day apart, which `format_date` alone can't.
+fn format_datetime(rfc3339: &str) -> String {
+    rfc3339.get(0..16).unwrap_or(rfc3339).replace('T', " ")
+}
+
+#[component]
+fn ActivityRow(entry: crate::server_fns::ActivityLogEntry) -> impl IntoView {
+    let when = format_datetime(&entry.created_at);
+
+    view! {
+        <li class="token-row">
+            <div>
+                <p class="token-name">
+                    <strong>{entry.username}</strong> " " {entry.action}
+                    {entry.target.map(|target| format!(": {target}"))}
+                </p>
+                <p class="file-sub">{when}</p>
             </div>
         </li>
     }

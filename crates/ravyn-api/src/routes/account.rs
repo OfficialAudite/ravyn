@@ -51,6 +51,10 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>
         return new_pending_login_response(&state, user.id).await;
     }
 
+    let _ = state
+        .db
+        .log_activity(Some(user.id), &user.username, "logged in", None)
+        .await;
     new_session_response(&state, user.id).await
 }
 
@@ -116,6 +120,10 @@ pub async fn login_totp(
     }
 
     let _ = state.db.delete_pending_login(&token_hash).await;
+    let _ = state
+        .db
+        .log_activity(Some(user.id), &user.username, "logged in", None)
+        .await;
     new_session_response(&state, user.id).await
 }
 
@@ -269,6 +277,16 @@ pub async fn register(
         }
     }
 
+    let action = if is_first_user {
+        "registered (first admin)"
+    } else {
+        "registered"
+    };
+    let _ = state
+        .db
+        .log_activity(Some(user.id), &user.username, action, None)
+        .await;
+
     new_session_response(&state, user.id).await
 }
 
@@ -350,6 +368,11 @@ pub async fn change_password(
         tracing::error!(%err, "failed to save new password");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+
+    let _ = state
+        .db
+        .log_activity(Some(user.id), &user.username, "changed password", None)
+        .await;
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -436,6 +459,11 @@ pub async fn confirm_totp(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
+    let _ = state
+        .db
+        .log_activity(Some(user.id), &user.username, "enabled 2FA", None)
+        .await;
+
     Json(serde_json::json!({ "recovery_codes": recovery_codes })).into_response()
 }
 
@@ -471,6 +499,11 @@ pub async fn disable_totp(
         tracing::error!(%err, "failed to disable totp");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+
+    let _ = state
+        .db
+        .log_activity(Some(user.id), &user.username, "disabled 2FA", None)
+        .await;
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -586,6 +619,16 @@ pub async fn set_instance_settings(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
+
+    let _ = state
+        .db
+        .log_activity(
+            Some(user.id),
+            &user.username,
+            "changed instance settings",
+            None,
+        )
+        .await;
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -744,6 +787,29 @@ pub async fn set_user_limit(
         tracing::error!(%err, "failed to set storage limit");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+
+    let target_username = state
+        .db
+        .get_user_by_id(UserId(id))
+        .await
+        .ok()
+        .flatten()
+        .map(|target| target.username);
+    let limit_description = match body.max_storage_bytes {
+        Some(bytes) => format!("{bytes} bytes"),
+        None => "unlimited".to_string(),
+    };
+    let _ = state
+        .db
+        .log_activity(
+            Some(user.id),
+            &user.username,
+            "set a storage limit",
+            target_username
+                .map(|name| format!("{name} -> {limit_description}"))
+                .as_deref(),
+        )
+        .await;
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -1057,5 +1123,55 @@ pub async fn storage_info(AuthedUser(_): AuthedUser) -> Response {
             "root": std::env::var("STORAGE_ROOT").unwrap_or_else(|_| "./data".into()),
         }))
         .into_response()
+    }
+}
+
+#[derive(Serialize)]
+pub struct ActivityLogEntrySummary {
+    id: Uuid,
+    username: String,
+    action: String,
+    target: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+}
+
+impl From<ravyn_core::ActivityLogEntry> for ActivityLogEntrySummary {
+    fn from(entry: ravyn_core::ActivityLogEntry) -> Self {
+        ActivityLogEntrySummary {
+            id: entry.id,
+            username: entry.username,
+            action: entry.action,
+            target: entry.target,
+            created_at: entry.created_at,
+        }
+    }
+}
+
+/// The most recent activity across the whole instance, regardless of
+/// owner - who uploaded or deleted what, who logged in, and what an
+/// admin changed. `username` on each entry is a snapshot taken when the
+/// action happened, not a live lookup, so this stays readable even for an
+/// account since renamed or removed.
+pub async fn list_activity(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    match state.db.list_recent_activity(200).await {
+        Ok(entries) => {
+            let summaries: Vec<ActivityLogEntrySummary> = entries
+                .into_iter()
+                .map(ActivityLogEntrySummary::from)
+                .collect();
+            Json(summaries).into_response()
+        }
+        Err(err) => {
+            tracing::error!(%err, "failed to list activity log");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }

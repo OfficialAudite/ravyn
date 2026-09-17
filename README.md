@@ -222,6 +222,17 @@ total files, total storage, and the instance-wide type breakdown. Both reuse the
 existing per-owner file list rather than a new aggregate query or any kind of
 stored counter, for the same reason the quota check does.
 
+### Activity log
+
+An admin-only tab on `/admin` (`GET /admin/activity`) showing the most recent 200
+events on the instance: who uploaded or deleted a file, who logged in or
+registered, who changed their password or toggled 2FA, and what an admin changed
+(a user's storage limit, an instance setting). Each entry stores the acting user's
+username as a plain snapshot at the time (`activity_log.username`), not a live
+join against `users`, so the log stays readable even for an account since renamed
+or deleted. No filtering or pagination, just the most recent 200 entries in one
+list, which is plenty at self-hosted scale.
+
 ### File naming
 
 By default a freshly uploaded file keeps whatever name the uploading client sent —

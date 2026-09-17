@@ -529,6 +529,16 @@ pub async fn upload_file(
         let name = field.file_name().unwrap_or("upload").to_string();
         let saved = save_uploaded_part(&state, user.id, field).await;
         if let Ok(file) = &saved {
+            let _ = state
+                .db
+                .log_activity(
+                    Some(user.id),
+                    &user.username,
+                    "uploaded a file",
+                    Some(&file.original_name),
+                )
+                .await;
+
             // Spawned rather than awaited: a slow or unreachable webhook
             // target must never delay the upload response the way it
             // would if this sat in the same request/response cycle.
@@ -601,6 +611,16 @@ pub async fn delete_file(
         tracing::error!(%err, "failed to delete file record");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+
+    let _ = state
+        .db
+        .log_activity(
+            Some(user.id),
+            &user.username,
+            "deleted a file",
+            Some(&file.original_name),
+        )
+        .await;
 
     StatusCode::NO_CONTENT.into_response()
 }
