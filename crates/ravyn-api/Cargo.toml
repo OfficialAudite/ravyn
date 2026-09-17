@@ -21,3 +21,4 @@ serde_json.workspace = true
 sha2 = "0.10"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "avif"] }
+img-parts = "0.4"

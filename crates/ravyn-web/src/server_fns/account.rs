@@ -367,6 +367,7 @@ pub struct InstanceSettings {
     pub naming_scheme: String,
     pub random_name_length: i64,
     pub default_expiry_preset: String,
+    pub strip_exif: bool,
 }
 
 #[server]
@@ -395,15 +396,17 @@ pub async fn get_instance_settings() -> Result<InstanceSettings, ServerFnError> 
 }
 
 /// Every argument optional so the registration form, the naming-scheme
-/// form, and the auto-delete form (three independent forms on the same
-/// admin page) can each save just their own setting without clobbering the
-/// others' — mirrors `SetInstanceSettingsRequest` on the API side.
+/// form, the auto-delete form, and the EXIF-stripping toggle (independent
+/// forms on the same admin page) can each save just their own setting
+/// without clobbering the others' — mirrors `SetInstanceSettingsRequest` on
+/// the API side.
 #[server]
 pub async fn set_instance_settings(
     registration_mode: Option<String>,
     naming_scheme: Option<String>,
     random_name_length: Option<i64>,
     default_expiry_preset: Option<String>,
+    strip_exif: Option<bool>,
 ) -> Result<(), ServerFnError> {
     use crate::server_fns::ssr;
 
@@ -419,6 +422,7 @@ pub async fn set_instance_settings(
             "naming_scheme": naming_scheme,
             "random_name_length": random_name_length,
             "default_expiry_preset": default_expiry_preset,
+            "strip_exif": strip_exif,
         }))
         .send()
         .await

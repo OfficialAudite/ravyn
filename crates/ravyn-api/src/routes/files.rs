@@ -122,6 +122,29 @@ async fn generate_thumbnail(state: &AppState, id: FileId, bytes: &[u8]) {
     }
 }
 
+/// Strips EXIF metadata (camera model, GPS coordinates, timestamps, etc.)
+/// from an uploaded image before it's stored — same reasoning as
+/// `generate_thumbnail`'s best-effort approach: `img-parts` only
+/// understands JPEG/PNG/WebP, so anything else (GIF, AVIF) is returned
+/// untouched rather than failing the upload over a privacy nice-to-have.
+/// Rewrites the container in place rather than fully decoding and
+/// re-encoding the image, so this never touches pixel data or
+/// recompresses — the file this returns is byte-identical to the original
+/// except for the removed EXIF segment.
+fn strip_exif(bytes: axum::body::Bytes) -> axum::body::Bytes {
+    use img_parts::ImageEXIF;
+
+    let Ok(Some(mut image)) = img_parts::DynImage::from_bytes(bytes.clone()) else {
+        return bytes;
+    };
+    if image.exif().is_none() {
+        return bytes;
+    }
+
+    image.set_exif(None);
+    image.encoder().bytes()
+}
+
 /// One field's worth of a multipart upload, saved. Pulled out of
 /// `upload_file` so it can be called once per part — the web UI's dropzone
 /// sends one request with several parts when you drop multiple files at
@@ -228,6 +251,15 @@ async fn save_buffered_part(
             ));
         }
     }
+
+    // Quota was already checked against the pre-strip size above — stripping
+    // only ever removes bytes, so re-checking after wouldn't change the
+    // outcome.
+    let bytes = if state.db.get_strip_exif().await.unwrap_or(true) {
+        strip_exif(bytes)
+    } else {
+        bytes
+    };
 
     let sha256 = hex::encode(Sha256::digest(&bytes));
     let storage_key = format!("{}/{}", owner_id.0, Uuid::new_v4());

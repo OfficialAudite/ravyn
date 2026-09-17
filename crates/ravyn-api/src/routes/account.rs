@@ -269,6 +269,7 @@ pub struct SetInstanceSettingsRequest {
     naming_scheme: Option<String>,
     random_name_length: Option<i64>,
     default_expiry_preset: Option<String>,
+    strip_exif: Option<bool>,
 }
 
 pub async fn get_instance_settings(
@@ -299,12 +300,14 @@ pub async fn get_instance_settings(
         .get_default_expiry_preset()
         .await
         .unwrap_or(ExpiryPreset::Never);
+    let strip_exif = state.db.get_strip_exif().await.unwrap_or(true);
 
     Json(serde_json::json!({
         "registration_mode": mode.as_str(),
         "naming_scheme": naming_scheme.as_str(),
         "random_name_length": random_name_length,
         "default_expiry_preset": default_expiry_preset.as_str(),
+        "strip_exif": strip_exif,
     }))
     .into_response()
 }
@@ -358,6 +361,13 @@ pub async fn set_instance_settings(
         };
         if let Err(err) = state.db.set_default_expiry_preset(preset).await {
             tracing::error!(%err, "failed to save default expiry preset");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    if let Some(strip_exif) = body.strip_exif {
+        if let Err(err) = state.db.set_strip_exif(strip_exif).await {
+            tracing::error!(%err, "failed to save strip-exif setting");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }

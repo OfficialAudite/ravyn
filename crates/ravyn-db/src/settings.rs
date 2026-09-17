@@ -84,4 +84,22 @@ impl Db {
 
         Ok(())
     }
+
+    pub async fn get_strip_exif(&self) -> Result<bool, DbError> {
+        let value: bool =
+            sqlx::query_scalar("select strip_exif from instance_settings where id = 1")
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(value)
+    }
+
+    pub async fn set_strip_exif(&self, strip_exif: bool) -> Result<(), DbError> {
+        sqlx::query("update instance_settings set strip_exif = $1 where id = 1")
+            .bind(strip_exif)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
 }

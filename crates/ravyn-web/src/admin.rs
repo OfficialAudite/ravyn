@@ -76,6 +76,7 @@ fn AdminTabs() -> impl IntoView {
                     <RegistrationSection/>
                     <NamingSchemeSection/>
                     <ExpirySection/>
+                    <ExifSection/>
                 }
                     .into_any()
             }
@@ -191,6 +192,7 @@ fn RegistrationModeForm(
                         naming_scheme: None,
                         random_name_length: None,
                         default_expiry_preset: None,
+                        strip_exif: None,
                     });
             }
         >
@@ -282,6 +284,7 @@ fn NamingSchemeForm(
                         naming_scheme: Some(scheme.get()),
                         random_name_length: Some(length),
                         default_expiry_preset: None,
+                        strip_exif: None,
                     });
             }
         >
@@ -391,6 +394,7 @@ fn ExpiryForm(
                         naming_scheme: None,
                         random_name_length: None,
                         default_expiry_preset: Some(preset.get()),
+                        strip_exif: None,
                     });
             }
         >
@@ -421,6 +425,85 @@ fn ExpiryForm(
             </button>
             {move || {
                 expiry_action
+                    .value()
+                    .get()
+                    .map(|result| match result {
+                        Ok(_) => view! { <p class="settings-hint">"saved."</p> }.into_any(),
+                        Err(err) => view! { <p class="form-error">{err.to_string()}</p> }.into_any(),
+                    })
+            }}
+        </form>
+    }
+}
+
+#[component]
+fn ExifSection() -> impl IntoView {
+    let exif_action = ServerAction::<SetInstanceSettings>::new();
+    let settings = Resource::new(
+        move || exif_action.version().get(),
+        |_| get_instance_settings(),
+    );
+
+    view! {
+        <div class="settings-section">
+            <h3>"privacy"</h3>
+            <p class="settings-hint">
+                "strip EXIF metadata (camera model, GPS coordinates, timestamps) from "
+                "uploaded images before they're stored. only affects JPEG, PNG, and WebP — "
+                "the formats that actually carry EXIF."
+            </p>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    settings
+                        .get()
+                        .map(|result| match result {
+                            Ok(settings) => view! { <ExifForm settings exif_action /> }.into_any(),
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load privacy settings"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn ExifForm(
+    settings: InstanceSettings,
+    exif_action: ServerAction<SetInstanceSettings>,
+) -> impl IntoView {
+    let (strip_exif, set_strip_exif) = signal(settings.strip_exif);
+
+    view! {
+        <form
+            class="embed-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                exif_action
+                    .dispatch(SetInstanceSettings {
+                        registration_mode: None,
+                        naming_scheme: None,
+                        random_name_length: None,
+                        default_expiry_preset: None,
+                        strip_exif: Some(strip_exif.get()),
+                    });
+            }
+        >
+            <label class="embed-toggle">
+                <input
+                    type="checkbox"
+                    prop:checked=move || strip_exif.get()
+                    on:change=move |ev| set_strip_exif.set(event_target_checked(&ev))
+                />
+                "strip EXIF metadata from uploaded images"
+            </label>
+            <button type="submit" class="btn btn-primary">
+                "save"
+            </button>
+            {move || {
+                exif_action
                     .value()
                     .get()
                     .map(|result| match result {

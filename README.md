@@ -221,6 +221,19 @@ join against). Edit a file's tags from its detail modal's tag icon (`PUT
 box matches both filenames and tags, and clicking a tag chip on a file card drops that
 tag straight into the search box.
 
+### EXIF stripping
+
+Instance-wide, on by default (`/admin`'s privacy section,
+`instance_settings.strip_exif`): removes EXIF metadata — camera model, GPS
+coordinates, timestamps — from an uploaded image before it's ever written to
+storage. Only affects JPEG, PNG, and WebP — the formats
+[`img-parts`](https://docs.rs/img-parts) understands — anything else (GIF, AVIF)
+uploads untouched rather than failing over a privacy nice-to-have, the same
+best-effort reasoning `generate_thumbnail` already uses. Rewrites the image
+container in place rather than decoding and re-encoding pixels, so a stripped file
+is byte-identical to the original except for the removed EXIF segment — no
+recompression, no quality loss.
+
 ## Embeds (Discord, Slack, Twitter)
 
 Every share link already works as a direct image/video link — paste one in Discord
