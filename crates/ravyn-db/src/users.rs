@@ -11,6 +11,9 @@ struct UserRow {
     password_hash: String,
     is_admin: bool,
     created_at: OffsetDateTime,
+    totp_secret: Option<String>,
+    totp_enabled: bool,
+    totp_recovery_codes: Vec<String>,
 }
 
 impl From<UserRow> for User {
@@ -21,6 +24,9 @@ impl From<UserRow> for User {
             password_hash: row.password_hash,
             is_admin: row.is_admin,
             created_at: row.created_at,
+            totp_secret: row.totp_secret,
+            totp_enabled: row.totp_enabled,
+            totp_recovery_codes: row.totp_recovery_codes,
         }
     }
 }
@@ -133,6 +139,67 @@ impl Db {
         sqlx::query("update users set password_hash = $2 where id = $1")
             .bind(user_id.0)
             .bind(password_hash)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Stores a freshly generated secret without enabling 2FA yet — the
+    /// pending state between "scan this QR" and "confirmed with a real
+    /// code" (`enable_totp`). Overwrites any previous pending secret, so
+    /// restarting setup before confirming is always safe.
+    pub async fn set_pending_totp_secret(
+        &self,
+        user_id: UserId,
+        secret: String,
+    ) -> Result<(), DbError> {
+        sqlx::query("update users set totp_secret = $2, totp_enabled = false where id = $1")
+            .bind(user_id.0)
+            .bind(secret)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn enable_totp(
+        &self,
+        user_id: UserId,
+        recovery_code_hashes: Vec<String>,
+    ) -> Result<(), DbError> {
+        sqlx::query("update users set totp_enabled = true, totp_recovery_codes = $2 where id = $1")
+            .bind(user_id.0)
+            .bind(recovery_code_hashes)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn disable_totp(&self, user_id: UserId) -> Result<(), DbError> {
+        sqlx::query(
+            "update users set totp_secret = null, totp_enabled = false, totp_recovery_codes = '{}' where id = $1",
+        )
+        .bind(user_id.0)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Removes one code from a user's recovery codes — redeeming one is a
+    /// single use. `array_remove` rather than fetch-modify-write, so a
+    /// concurrent redemption of a different code can never race this one
+    /// into overwriting it.
+    pub async fn consume_recovery_code(
+        &self,
+        user_id: UserId,
+        code_hash: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("update users set totp_recovery_codes = array_remove(totp_recovery_codes, $2) where id = $1")
+            .bind(user_id.0)
+            .bind(code_hash)
             .execute(&self.pool)
             .await?;
 

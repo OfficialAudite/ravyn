@@ -3,8 +3,9 @@ use leptos::prelude::*;
 use crate::format::{format_date, format_size, format_type_breakdown};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_embed_settings, get_my_stats, get_storage_info, list_api_tokens, ApiTokenInfo,
-    ChangePassword, CreateApiToken, DeleteApiToken, EmbedSettings, SetEmbedSettings,
+    get_embed_settings, get_my_stats, get_storage_info, list_api_tokens, me, ApiTokenInfo,
+    ChangePassword, ConfirmTotp, CreateApiToken, DeleteApiToken, DisableTotp, EmbedSettings,
+    SetEmbedSettings, SetupTotp, TotpSetup,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -283,6 +284,7 @@ fn AccountSection() -> impl IntoView {
             </Suspense>
             <ChangePasswordForm/>
         </div>
+        <TwoFactorSection/>
     }
 }
 
@@ -364,6 +366,233 @@ fn ChangePasswordForm() -> impl IntoView {
                     })
             }}
         </form>
+    }
+}
+
+/// Its own top-level `settings-section` rather than folded into
+/// `AccountSection` — it has enough moving state (setup in progress,
+/// just-confirmed recovery codes, enabled-with-a-disable-form) that sharing
+/// `AccountSection`'s own `Suspense`/resource would tangle the two.
+#[component]
+fn TwoFactorSection() -> impl IntoView {
+    let setup_action = ServerAction::<SetupTotp>::new();
+    let confirm_action = ServerAction::<ConfirmTotp>::new();
+    let disable_action = ServerAction::<DisableTotp>::new();
+
+    // Local to this section, not the shared `DashboardContext::account` —
+    // that one's key never includes these actions (they don't touch
+    // files/folders), and its own doc comment warns against folding
+    // unrelated mutations into that resource's refresh key. A fresh,
+    // independently-keyed resource is the same pattern every other
+    // settings/admin section already uses (`RegistrationSection`,
+    // `NamingSchemeSection`, etc.)
+    let account = Resource::new(
+        move || {
+            (
+                setup_action.version().get(),
+                confirm_action.version().get(),
+                disable_action.version().get(),
+            )
+        },
+        |_| me(),
+    );
+
+    view! {
+        <div class="settings-section">
+            <h3>"two-factor authentication"</h3>
+            {move || {
+                confirm_action
+                    .value()
+                    .get()
+                    .and_then(|result| result.ok())
+                    .map(|codes| view! { <RecoveryCodes codes /> })
+            }}
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    account
+                        .get()
+                        .map(|result| match result {
+                            Ok(info) if info.totp_enabled => {
+                                view! { <DisableTotpForm disable_action /> }.into_any()
+                            }
+                            Ok(_) => {
+                                match setup_action.value().get() {
+                                    Some(Ok(setup)) => {
+                                        view! { <ConfirmTotpForm setup confirm_action /> }.into_any()
+                                    }
+                                    _ => view! { <EnableTotpPrompt setup_action /> }.into_any(),
+                                }
+                            }
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load 2FA status"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn EnableTotpPrompt(setup_action: ServerAction<SetupTotp>) -> impl IntoView {
+    view! {
+        <p class="settings-hint">
+            "require a code from an authenticator app, in addition to your password, to sign in."
+        </p>
+        <button
+            type="button"
+            class="btn btn-primary"
+            on:click=move |_| {
+                setup_action.dispatch(SetupTotp {});
+            }
+        >
+            "enable two-factor authentication"
+        </button>
+        {move || {
+            setup_action
+                .value()
+                .get()
+                .and_then(|result| result.err())
+                .map(|err| view! { <p class="form-error">{err.to_string()}</p> })
+        }}
+    }
+}
+
+#[component]
+fn ConfirmTotpForm(setup: TotpSetup, confirm_action: ServerAction<ConfirmTotp>) -> impl IntoView {
+    let (code, set_code) = signal(String::new());
+    let qr_src = format!("data:image/png;base64,{}", setup.qr_code_base64);
+    let secret = setup.secret.clone();
+
+    view! {
+        <p class="settings-hint">
+            "scan this with your authenticator app (Google Authenticator, 1Password, Authy, ...), "
+            "or enter the code below manually:"
+        </p>
+        <img class="totp-qr" src=qr_src alt="two-factor setup QR code" />
+        <p class="token-result">{secret}</p>
+        <form
+            class="embed-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                confirm_action.dispatch(ConfirmTotp { code: code.get() });
+            }
+        >
+            <div class="field">
+                <label for="confirm-totp-code">"code from your app"</label>
+                <input
+                    id="confirm-totp-code"
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="one-time-code"
+                    autofocus
+                    on:input=move |ev| set_code.set(event_target_value(&ev))
+                />
+            </div>
+            <button type="submit" class="btn btn-primary">
+                "confirm and enable"
+            </button>
+            {move || {
+                confirm_action
+                    .value()
+                    .get()
+                    .and_then(|result| result.err())
+                    .map(|err| view! { <p class="form-error">{err.to_string()}</p> })
+            }}
+        </form>
+    }
+}
+
+#[component]
+fn RecoveryCodes(codes: Vec<String>) -> impl IntoView {
+    view! {
+        <p class="settings-hint">
+            "two-factor authentication is enabled. save these recovery codes somewhere safe — "
+            "each works once, if you ever lose access to your authenticator app. they won't be "
+            "shown again."
+        </p>
+        <div class="recovery-codes">
+            {codes.into_iter().map(|code| view! { <span class="token-result">{code}</span> }).collect_view()}
+        </div>
+    }
+}
+
+#[component]
+fn DisableTotpForm(disable_action: ServerAction<DisableTotp>) -> impl IntoView {
+    let (disabling, set_disabling) = signal(false);
+    let (password, set_password) = signal(String::new());
+    let (code, set_code) = signal(String::new());
+
+    view! {
+        <p class="settings-row">
+            "two-factor authentication is " <strong>"enabled"</strong> "."
+        </p>
+        {move || {
+            if disabling.get() {
+                view! {
+                    <form
+                        class="embed-form"
+                        on:submit=move |ev| {
+                            ev.prevent_default();
+                            disable_action
+                                .dispatch(DisableTotp {
+                                    password: password.get(),
+                                    code: code.get(),
+                                });
+                        }
+                    >
+                        <div class="field">
+                            <label for="disable-totp-password">"current password"</label>
+                            <input
+                                id="disable-totp-password"
+                                type="password"
+                                autocomplete="current-password"
+                                on:input=move |ev| set_password.set(event_target_value(&ev))
+                            />
+                        </div>
+                        <div class="field">
+                            <label for="disable-totp-code">"code from your app, or a recovery code"</label>
+                            <input
+                                id="disable-totp-code"
+                                type="text"
+                                autocomplete="one-time-code"
+                                on:input=move |ev| set_code.set(event_target_value(&ev))
+                            />
+                        </div>
+                        <button type="submit" class="btn btn-danger">
+                            "disable two-factor authentication"
+                        </button>
+                        <button
+                            type="button"
+                            class="btn btn-ghost"
+                            on:click=move |_| set_disabling.set(false)
+                        >
+                            "cancel"
+                        </button>
+                        {move || {
+                            disable_action
+                                .value()
+                                .get()
+                                .and_then(|result| result.err())
+                                .map(|err| view! { <p class="form-error">{err.to_string()}</p> })
+                        }}
+                    </form>
+                }
+                    .into_any()
+            } else {
+                view! {
+                    <button
+                        type="button"
+                        class="btn btn-ghost"
+                        on:click=move |_| set_disabling.set(true)
+                    >
+                        "disable two-factor authentication"
+                    </button>
+                }
+                    .into_any()
+            }
+        }}
     }
 }
 

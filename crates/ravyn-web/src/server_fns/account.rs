@@ -1,8 +1,17 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum LoginResult {
+    /// Session cookie already set — nothing further to do.
+    Success,
+    /// A correct password on a 2FA account doesn't sign you in by itself —
+    /// `login_token` identifies the pending login for `login_totp`.
+    TotpRequired { login_token: String },
+}
+
 #[server]
-pub async fn login(username: String, password: String) -> Result<(), ServerFnError> {
+pub async fn login(username: String, password: String) -> Result<LoginResult, ServerFnError> {
     use crate::server_fns::ssr;
 
     let response = reqwest::Client::new()
@@ -14,6 +23,41 @@ pub async fn login(username: String, password: String) -> Result<(), ServerFnErr
 
     if !response.status().is_success() {
         return Err(ServerFnError::new("wrong username or password"));
+    }
+
+    // Set for the plain-session case; a no-op for the totp-required case,
+    // since `/login` never sets a cookie until `/login/totp` confirms a code.
+    ssr::relay_set_cookie(&response);
+
+    #[derive(Deserialize)]
+    struct TotpRequiredBody {
+        totp_required: bool,
+        login_token: String,
+    }
+
+    // A successful plain login's body is empty, which fails to parse here —
+    // that failure is exactly how the two cases are told apart.
+    match response.json::<TotpRequiredBody>().await {
+        Ok(body) if body.totp_required => Ok(LoginResult::TotpRequired {
+            login_token: body.login_token,
+        }),
+        _ => Ok(LoginResult::Success),
+    }
+}
+
+#[server]
+pub async fn login_totp(login_token: String, code: String) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/login/totp", ssr::api_base_url()))
+        .json(&serde_json::json!({ "login_token": login_token, "code": code }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("invalid code"));
     }
 
     ssr::relay_set_cookie(&response);
@@ -98,6 +142,7 @@ pub async fn register(
 pub struct AccountInfo {
     pub username: String,
     pub is_admin: bool,
+    pub totp_enabled: bool,
 }
 
 #[server]
@@ -152,6 +197,103 @@ pub async fn change_password(
     }
     if !response.status().is_success() {
         return Err(ServerFnError::new("failed to change password"));
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TotpSetup {
+    pub secret: String,
+    pub otpauth_url: String,
+    pub qr_code_base64: String,
+}
+
+#[server]
+pub async fn setup_totp() -> Result<TotpSetup, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/me/totp/setup", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        let message = response.text().await.unwrap_or_default();
+        return Err(ServerFnError::new(if message.is_empty() {
+            "failed to start 2FA setup".to_string()
+        } else {
+            message
+        }));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[server]
+pub async fn confirm_totp(code: String) -> Result<Vec<String>, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/me/totp/confirm", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .json(&serde_json::json!({ "code": code }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("invalid code"));
+    }
+
+    #[derive(Deserialize)]
+    struct ConfirmResponse {
+        recovery_codes: Vec<String>,
+    }
+
+    let body: ConfirmResponse = response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+    Ok(body.recovery_codes)
+}
+
+#[server]
+pub async fn disable_totp(password: String, code: String) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/me/totp/disable", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .json(&serde_json::json!({ "password": password, "code": code }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        let message = response.text().await.unwrap_or_default();
+        return Err(ServerFnError::new(if message.is_empty() {
+            "failed to disable 2FA".to_string()
+        } else {
+            message
+        }));
     }
 
     Ok(())

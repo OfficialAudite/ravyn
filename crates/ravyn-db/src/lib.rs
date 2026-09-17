@@ -3,6 +3,7 @@ mod error;
 mod files;
 mod folders;
 mod invites;
+mod pending_logins;
 mod sessions;
 mod settings;
 mod users;

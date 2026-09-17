@@ -9,6 +9,10 @@ use crate::state::AppState;
 
 pub const SESSION_COOKIE: &str = "ravyn_session";
 pub const SESSION_LIFETIME: time::Duration = time::Duration::days(30);
+/// How long a `PendingLogin` (the gap between a correct password and a
+/// confirmed TOTP code) stays valid — short, since it only needs to survive
+/// someone typing a 6-digit code from their phone.
+pub const PENDING_LOGIN_LIFETIME: time::Duration = time::Duration::minutes(5);
 
 /// A request authenticated either by a session cookie (browser) or an
 /// `Authorization: Bearer <token>` header (ShareX and other API clients).

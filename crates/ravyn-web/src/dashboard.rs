@@ -9,8 +9,8 @@ use crate::icons::{
 };
 use crate::server_fns::{
     get_registration_status, list_files, list_folders, me, AccountInfo, CreateFolder, DeleteFile,
-    DeleteFolder, FileSummary, FolderSummary, Login, Logout, MoveFileToFolder, RenameFile,
-    SetFileExpiry, SetFilePassword, SetFileTags, SetFolderPassword,
+    DeleteFolder, FileSummary, FolderSummary, Login, LoginResult, LoginTotp, Logout,
+    MoveFileToFolder, RenameFile, SetFileExpiry, SetFilePassword, SetFileTags, SetFolderPassword,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,6 +100,7 @@ impl SortOrder {
 #[derive(Clone, Copy)]
 pub struct Actions {
     login: ServerAction<Login>,
+    login_totp: ServerAction<LoginTotp>,
     logout: ServerAction<Logout>,
     delete_file: ServerAction<DeleteFile>,
     move_file: ServerAction<MoveFileToFolder>,
@@ -156,6 +157,7 @@ pub struct DashboardContext {
 pub fn DashboardLayout() -> impl IntoView {
     let actions = Actions {
         login: ServerAction::new(),
+        login_totp: ServerAction::new(),
         logout: ServerAction::new(),
         delete_file: ServerAction::new(),
         move_file: ServerAction::new(),
@@ -171,6 +173,7 @@ pub fn DashboardLayout() -> impl IntoView {
     let refresh_key = move || {
         (
             actions.login.version().get(),
+            actions.login_totp.version().get(),
             actions.logout.version().get(),
             actions.delete_file.version().get(),
             actions.move_file.version().get(),
@@ -218,7 +221,15 @@ pub fn DashboardLayout() -> impl IntoView {
                             }
                                 .into_any()
                         }
-                        Err(_) => view! { <LoginForm login_action=actions.login /> }.into_any(),
+                        Err(_) => {
+                            view! {
+                                <LoginForm
+                                    login_action=actions.login
+                                    login_totp_action=actions.login_totp
+                                />
+                            }
+                                .into_any()
+                        }
                     })
             }}
         </Suspense>
@@ -227,7 +238,8 @@ pub fn DashboardLayout() -> impl IntoView {
 
 #[component]
 fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
-    let account = expect_context::<DashboardContext>().account;
+    let ctx = expect_context::<DashboardContext>();
+    let account = ctx.account;
 
     view! {
         <div class="topbar">
@@ -254,6 +266,11 @@ fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
             <button
                 class="btn btn-ghost"
                 on:click=move |_| {
+                    // `login`'s resolved value otherwise lingers as
+                    // `TotpRequired` from whatever login got this session
+                    // started, so logging back in later would show the
+                    // code-entry screen before a password was ever typed.
+                    ctx.actions.login.clear();
                     logout.dispatch(Logout {});
                 }
             >
@@ -264,89 +281,147 @@ fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
 }
 
 #[component]
-fn LoginForm(login_action: ServerAction<Login>) -> impl IntoView {
+fn LoginForm(
+    login_action: ServerAction<Login>,
+    login_totp_action: ServerAction<LoginTotp>,
+) -> impl IntoView {
     let (username, set_username) = signal(String::new());
     let (password, set_password) = signal(String::new());
+    let (totp_code, set_totp_code) = signal(String::new());
     let status = Resource::new(|| (), |_| get_registration_status());
+
+    // A correct password on a 2FA account doesn't sign you in — `login`
+    // returns `TotpRequired { login_token }` instead of setting a cookie,
+    // and this reads that straight back out of the action's own resolved
+    // value rather than a separate signal, so there's nothing to keep in
+    // sync if the action ever resolves more than once.
+    let pending_login_token = move || match login_action.value().get() {
+        Some(Ok(LoginResult::TotpRequired { login_token })) => Some(login_token),
+        _ => None,
+    };
 
     view! {
         <div class="login-screen">
             <div class="login-card">
                 <span class="wordmark">"ravyn"</span>
-                <p class="login-tagline">"sign in to your hoard"</p>
-                <form on:submit=move |ev| {
-                    ev.prevent_default();
-                    login_action
-                        .dispatch(Login {
-                            username: username.get(),
-                            password: password.get(),
-                        });
-                }>
-                    <div class="field">
-                        <label for="username">"username"</label>
-                        <input
-                            id="username"
-                            type="text"
-                            autocomplete="username"
-                            on:input=move |ev| set_username.set(event_target_value(&ev))
-                        />
-                    </div>
-                    <div class="field">
-                        <label for="password">"password"</label>
-                        <input
-                            id="password"
-                            type="password"
-                            autocomplete="current-password"
-                            on:input=move |ev| set_password.set(event_target_value(&ev))
-                        />
-                    </div>
-                    <button type="submit" class="btn btn-primary btn-block">
-                        "log in"
-                    </button>
-                    {move || {
-                        login_action
-                            .value()
-                            .get()
-                            .and_then(|result| result.err())
-                            .map(|err| view! { <p class="form-error">{err.to_string()}</p> })
-                    }}
-                </form>
-                // Its own `<Suspense>`, deliberately not sharing the outer
-                // one gating this whole form on `files` — an extra resource
-                // dropped into an already-Suspense-tracked subtree caused
-                // exactly the hydration corruption described on
-                // `DashboardContext::opened_file` above, just for the
-                // login screen instead of the dashboard.
-                <Suspense fallback=|| ()>
-                    {move || {
-                        status
-                            .get()
-                            .and_then(Result::ok)
-                            .and_then(|status| {
-                                if status.setup_required {
-                                    Some(
-                                        view! {
-                                            <p class="login-tagline">
-                                                <A href="/register">
-                                                    "no account yet? set up ravyn"
-                                                </A>
-                                            </p>
-                                        },
-                                    )
-                                } else if status.mode == "open" || status.mode == "invite" {
-                                    Some(
-                                        view! {
-                                            <p class="login-tagline">
-                                                <A href="/register">"create an account"</A>
-                                            </p>
-                                        },
-                                    )
-                                } else {
-                                    None
-                                }
-                            })
-                    }}
-                </Suspense>
+                {move || {
+                    if let Some(login_token) = pending_login_token() {
+                        view! {
+                            <p class="login-tagline">
+                                "enter the code from your authenticator app"
+                            </p>
+                            <form on:submit=move |ev| {
+                                ev.prevent_default();
+                                login_totp_action
+                                    .dispatch(LoginTotp {
+                                        login_token: login_token.clone(),
+                                        code: totp_code.get(),
+                                    });
+                            }>
+                                <div class="field">
+                                    <label for="totp-code">"code"</label>
+                                    <input
+                                        id="totp-code"
+                                        type="text"
+                                        inputmode="numeric"
+                                        autocomplete="one-time-code"
+                                        autofocus
+                                        on:input=move |ev| set_totp_code.set(event_target_value(&ev))
+                                    />
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-block">
+                                    "verify"
+                                </button>
+                                {move || {
+                                    login_totp_action
+                                        .value()
+                                        .get()
+                                        .and_then(|result| result.err())
+                                        .map(|err| view! { <p class="form-error">{err.to_string()}</p> })
+                                }}
+                            </form>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <p class="login-tagline">"sign in to your hoard"</p>
+                            <form on:submit=move |ev| {
+                                ev.prevent_default();
+                                login_action
+                                    .dispatch(Login {
+                                        username: username.get(),
+                                        password: password.get(),
+                                    });
+                            }>
+                                <div class="field">
+                                    <label for="username">"username"</label>
+                                    <input
+                                        id="username"
+                                        type="text"
+                                        autocomplete="username"
+                                        on:input=move |ev| set_username.set(event_target_value(&ev))
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label for="password">"password"</label>
+                                    <input
+                                        id="password"
+                                        type="password"
+                                        autocomplete="current-password"
+                                        on:input=move |ev| set_password.set(event_target_value(&ev))
+                                    />
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-block">
+                                    "log in"
+                                </button>
+                                {move || {
+                                    login_action
+                                        .value()
+                                        .get()
+                                        .and_then(|result| result.err())
+                                        .map(|err| view! { <p class="form-error">{err.to_string()}</p> })
+                                }}
+                            </form>
+                            // Its own `<Suspense>`, deliberately not sharing the outer
+                            // one gating this whole form on `files` — an extra resource
+                            // dropped into an already-Suspense-tracked subtree caused
+                            // exactly the hydration corruption described on
+                            // `DashboardContext::opened_file` above, just for the
+                            // login screen instead of the dashboard.
+                            <Suspense fallback=|| ()>
+                                {move || {
+                                    status
+                                        .get()
+                                        .and_then(Result::ok)
+                                        .and_then(|status| {
+                                            if status.setup_required {
+                                                Some(
+                                                    view! {
+                                                        <p class="login-tagline">
+                                                            <A href="/register">
+                                                                "no account yet? set up ravyn"
+                                                            </A>
+                                                        </p>
+                                                    },
+                                                )
+                                            } else if status.mode == "open" || status.mode == "invite" {
+                                                Some(
+                                                    view! {
+                                                        <p class="login-tagline">
+                                                            <A href="/register">"create an account"</A>
+                                                        </p>
+                                                    },
+                                                )
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                }}
+                            </Suspense>
+                        }
+                            .into_any()
+                    }
+                }}
             </div>
         </div>
     }

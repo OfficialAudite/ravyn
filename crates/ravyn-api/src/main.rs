@@ -101,6 +101,9 @@ async fn create_user(database_url: &str, username: &str, password: &str) {
         // where only the very first account gets that automatically.
         is_admin: true,
         created_at: OffsetDateTime::now_utc(),
+        totp_secret: None,
+        totp_enabled: false,
+        totp_recovery_codes: Vec::new(),
     };
 
     db.create_user(&user).await.expect("failed to create user");

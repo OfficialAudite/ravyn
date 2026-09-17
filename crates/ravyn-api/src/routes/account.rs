@@ -17,7 +17,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
-    auth::{AuthedUser, SESSION_COOKIE, SESSION_LIFETIME},
+    auth::{AuthedUser, PENDING_LOGIN_LIFETIME, SESSION_COOKIE, SESSION_LIFETIME},
     state::AppState,
 };
 
@@ -27,6 +27,12 @@ pub struct LoginRequest {
     password: String,
 }
 
+/// For an account without 2FA, this signs straight in. For one with 2FA,
+/// a correct password alone isn't enough — instead of a session, this
+/// issues a short-lived `PendingLogin` and asks the client to follow up at
+/// `POST /login/totp` with a code. The response shape tells the two apart:
+/// `{"totp_required": true, "login_token": ...}` versus a plain session
+/// cookie.
 pub async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) -> Response {
     let user = match state.db.get_user_by_username(&body.username).await {
         Ok(Some(user)) => user,
@@ -41,7 +47,88 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    if user.totp_enabled {
+        return new_pending_login_response(&state, user.id).await;
+    }
+
     new_session_response(&state, user.id).await
+}
+
+async fn new_pending_login_response(state: &AppState, user_id: UserId) -> Response {
+    let token = core_auth::generate_token();
+    let pending = ravyn_core::PendingLogin {
+        token_hash: core_auth::hash_token(&token),
+        user_id,
+        created_at: OffsetDateTime::now_utc(),
+        expires_at: OffsetDateTime::now_utc() + PENDING_LOGIN_LIFETIME,
+    };
+
+    if let Err(err) = state.db.create_pending_login(&pending).await {
+        tracing::error!(%err, "failed to create pending login");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    Json(serde_json::json!({ "totp_required": true, "login_token": token })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct TotpLoginRequest {
+    login_token: String,
+    code: String,
+}
+
+/// Completes a login started at `POST /login` for a 2FA account. Accepts
+/// either a current TOTP code or an unused recovery code — either way, the
+/// pending login is deleted here so it can't be redeemed twice, same as an
+/// invite code.
+pub async fn login_totp(
+    State(state): State<AppState>,
+    Json(body): Json<TotpLoginRequest>,
+) -> Response {
+    let token_hash = core_auth::hash_token(&body.login_token);
+    let pending = match state.db.get_pending_login(&token_hash).await {
+        Ok(Some(pending)) => pending,
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to look up pending login");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let user = match state.db.get_user_by_id(pending.user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to look up user");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let code = body.code.trim();
+    let valid = user
+        .totp_secret
+        .as_deref()
+        .is_some_and(|secret| core_auth::verify_totp(secret, code))
+        || redeem_recovery_code(&state, &user, code).await;
+
+    if !valid {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let _ = state.db.delete_pending_login(&token_hash).await;
+    new_session_response(&state, user.id).await
+}
+
+/// Tries `code` against each of the user's remaining recovery-code hashes;
+/// on a match, consumes that one (single-use, like an invite code) and
+/// reports success.
+async fn redeem_recovery_code(state: &AppState, user: &User, code: &str) -> bool {
+    let hash = core_auth::hash_token(code);
+    if !user.totp_recovery_codes.contains(&hash) {
+        return false;
+    }
+    let _ = state.db.consume_recovery_code(user.id, &hash).await;
+    true
 }
 
 /// Creates a session for `user_id` and sets its cookie — shared by `login`
@@ -166,6 +253,9 @@ pub async fn register(
         password_hash,
         is_admin: is_first_user,
         created_at: OffsetDateTime::now_utc(),
+        totp_secret: None,
+        totp_enabled: false,
+        totp_recovery_codes: Vec::new(),
     };
 
     if let Err(err) = state.db.create_user(&user).await {
@@ -217,8 +307,12 @@ pub async fn logout(State(state): State<AppState>, jar: CookieJar) -> Response {
 }
 
 pub async fn me(AuthedUser(user): AuthedUser) -> Response {
-    Json(serde_json::json!({ "username": user.username, "is_admin": user.is_admin }))
-        .into_response()
+    Json(serde_json::json!({
+        "username": user.username,
+        "is_admin": user.is_admin,
+        "totp_enabled": user.totp_enabled,
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -254,6 +348,127 @@ pub async fn change_password(
 
     if let Err(err) = state.db.set_password_hash(user.id, password_hash).await {
         tracing::error!(%err, "failed to save new password");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Serialize)]
+pub struct TotpSetupResponse {
+    /// Shown alongside the QR code for manual entry — some authenticator
+    /// apps or setups (a desktop-only password manager, a headless
+    /// terminal) can't scan one.
+    secret: String,
+    otpauth_url: String,
+    /// A base64-encoded PNG, embeddable directly as `data:image/png;base64,...`.
+    qr_code_base64: String,
+}
+
+/// Starts 2FA setup: generates a new secret and stores it as *pending* —
+/// `totp_enabled` stays false until `confirm_totp` proves the user's
+/// authenticator app actually agrees with it. Refuses to run again while
+/// 2FA is already on, so a stolen session alone can't silently swap out an
+/// account's second factor — that requires going through `disable_totp`
+/// first, which needs the password too.
+pub async fn setup_totp(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {
+    if user.totp_enabled {
+        return (
+            StatusCode::BAD_REQUEST,
+            "2FA is already enabled — disable it first",
+        )
+            .into_response();
+    }
+
+    let secret = core_auth::generate_totp_secret();
+    let Some((otpauth_url, qr_code_base64)) =
+        core_auth::totp_setup_uri(&secret, &user.username, "ravyn")
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+
+    if let Err(err) = state
+        .db
+        .set_pending_totp_secret(user.id, secret.clone())
+        .await
+    {
+        tracing::error!(%err, "failed to save pending totp secret");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    Json(TotpSetupResponse {
+        secret,
+        otpauth_url,
+        qr_code_base64,
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmTotpRequest {
+    code: String,
+}
+
+/// Confirms the pending secret from `setup_totp` with a real code from the
+/// user's authenticator app, turns 2FA on, and mints a fresh set of
+/// recovery codes — shown here, once, same as an API token.
+pub async fn confirm_totp(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Json(body): Json<ConfirmTotpRequest>,
+) -> Response {
+    let Some(secret) = user.totp_secret.as_deref() else {
+        return (StatusCode::BAD_REQUEST, "start 2FA setup first").into_response();
+    };
+
+    if !core_auth::verify_totp(secret, body.code.trim()) {
+        return (StatusCode::UNAUTHORIZED, "invalid code").into_response();
+    }
+
+    let recovery_codes = core_auth::generate_recovery_codes(8);
+    let hashes = recovery_codes
+        .iter()
+        .map(|code| core_auth::hash_token(code))
+        .collect();
+
+    if let Err(err) = state.db.enable_totp(user.id, hashes).await {
+        tracing::error!(%err, "failed to enable totp");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    Json(serde_json::json!({ "recovery_codes": recovery_codes })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct DisableTotpRequest {
+    password: String,
+    code: String,
+}
+
+/// Requires both the password and a valid code (TOTP or recovery) — a
+/// stolen session cookie alone can't turn off someone's second factor.
+pub async fn disable_totp(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Json(body): Json<DisableTotpRequest>,
+) -> Response {
+    if !core_auth::verify_password(&body.password, &user.password_hash) {
+        return (StatusCode::UNAUTHORIZED, "current password is incorrect").into_response();
+    }
+
+    let code = body.code.trim();
+    let code_ok = user
+        .totp_secret
+        .as_deref()
+        .is_some_and(|secret| core_auth::verify_totp(secret, code))
+        || redeem_recovery_code(&state, &user, code).await;
+
+    if !code_ok {
+        return (StatusCode::UNAUTHORIZED, "invalid code").into_response();
+    }
+
+    if let Err(err) = state.db.disable_totp(user.id).await {
+        tracing::error!(%err, "failed to disable totp");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 

@@ -11,6 +11,9 @@ struct UserRow {
     password_hash: String,
     is_admin: bool,
     created_at: OffsetDateTime,
+    totp_secret: Option<String>,
+    totp_enabled: bool,
+    totp_recovery_codes: Vec<String>,
 }
 
 impl From<UserRow> for User {
@@ -21,6 +24,9 @@ impl From<UserRow> for User {
             password_hash: row.password_hash,
             is_admin: row.is_admin,
             created_at: row.created_at,
+            totp_secret: row.totp_secret,
+            totp_enabled: row.totp_enabled,
+            totp_recovery_codes: row.totp_recovery_codes,
         }
     }
 }

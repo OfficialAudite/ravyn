@@ -957,6 +957,28 @@ input[type="color"] {
   word-break: break-all;
 }
 
+.totp-qr {
+  display: block;
+  width: 180px;
+  height: 180px;
+  margin: 0.75rem 0;
+  padding: 0.5rem;
+  background: #fff;
+  border-radius: var(--radius-sm);
+}
+
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.recovery-codes .token-result {
+  margin-top: 0;
+  text-align: center;
+}
+
 /* file detail modal -------------------------------------------------------- */
 
 .modal-backdrop {

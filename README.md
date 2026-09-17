@@ -154,6 +154,26 @@ the request is already authenticated by the session cookie, the same reasoning m
 services have for asking again: a session can outlive the moment someone meant to be
 signed in.
 
+### Two-factor authentication (TOTP)
+
+Optional, per-user, off by default — turned on from `/settings`. Standard TOTP
+(RFC 6238: SHA-1, 6 digits, 30-second step), compatible with any authenticator app.
+Setup shows a scannable QR code and the raw secret for manual entry
+(`POST /me/totp/setup`), and doesn't actually turn 2FA on until a real code from the
+app confirms it (`POST /me/totp/confirm`) — the secret is stored as *pending* in the
+meantime, so an abandoned setup never leaves an account half-protected by a secret
+nobody's app actually has. Confirming mints eight single-use recovery codes, shown
+once.
+
+Once enabled, `POST /login` stops signing you in directly: a correct password gets
+back `{"totp_required": true, "login_token": ...}` instead of a session cookie, and
+`POST /login/totp` (`{"login_token", "code"}`, a TOTP code or an unused recovery
+code) is what actually creates the session. The gap between the two is a
+`PendingLogin` — same single-use, hash-stored, short-lived (5 minutes) shape as a
+`Session` or `Invite`. Turning 2FA back off (`POST /me/totp/disable`) requires both
+the password and a valid code, so a stolen session cookie alone can neither read nor
+remove someone's second factor.
+
 ### Per-user storage quotas
 
 `/admin` shows every account on the instance with its current storage usage, and a
