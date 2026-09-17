@@ -21,6 +21,29 @@ pub fn format_date(rfc3339: &str) -> &str {
     rfc3339.get(0..10).unwrap_or(rfc3339)
 }
 
+/// Mirrors `ExpiryPreset` in `ravyn-core` (key, label) — duplicated rather
+/// than shared, since `ravyn-web` never depends on `ravyn-core` (it only
+/// ever talks to `ravyn-api` over HTTP, see `server_fns::ssr`). Used by both
+/// the admin default-expiry dropdown and each file's own expiry dropdown, so
+/// the two stay in sync with each other even if not with the API crate.
+pub const EXPIRY_PRESETS: &[(&str, &str)] = &[
+    ("never", "never"),
+    ("5m", "5 minutes"),
+    ("10m", "10 minutes"),
+    ("30m", "30 minutes"),
+    ("1h", "1 hour"),
+    ("6h", "6 hours"),
+    ("12h", "12 hours"),
+    ("1d", "1 day"),
+    ("3d", "3 days"),
+    ("1w", "1 week"),
+    ("2w", "2 weeks"),
+    ("1mo", "1 month"),
+    ("3mo", "3 months"),
+    ("6mo", "6 months"),
+    ("1y", "1 year"),
+];
+
 /// The `128 images · 12 videos · ...` line shared by a user's own stats and
 /// the instance-wide admin overview — plain string building here rather
 /// than a shared view-returning helper, so this file stays free of any

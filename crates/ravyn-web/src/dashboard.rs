@@ -2,15 +2,15 @@ use leptos::prelude::*;
 use leptos_router::components::{Outlet, A};
 
 use crate::browser::{copy_to_clipboard, submit_input_form, sync_dropped_files};
-use crate::format::{format_date, format_size};
+use crate::format::{format_date, format_size, EXPIRY_PRESETS};
 use crate::icons::{
-    CheckIcon, CloseIcon, CopyIcon, DownloadIcon, ExternalLinkIcon, FileTypeIcon, FolderIcon,
-    LockIcon, PencilIcon, PlusIcon, RavenIcon, SearchIcon, TrashIcon,
+    CheckIcon, ClockIcon, CloseIcon, CopyIcon, DownloadIcon, ExternalLinkIcon, FileTypeIcon,
+    FolderIcon, LockIcon, PencilIcon, PlusIcon, RavenIcon, SearchIcon, TagIcon, TrashIcon,
 };
 use crate::server_fns::{
     get_registration_status, list_files, list_folders, me, AccountInfo, CreateFolder, DeleteFile,
     DeleteFolder, FileSummary, FolderSummary, Login, Logout, MoveFileToFolder, RenameFile,
-    SetFilePassword, SetFolderPassword,
+    SetFileExpiry, SetFilePassword, SetFileTags, SetFolderPassword,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,8 @@ pub struct Actions {
     move_file: ServerAction<MoveFileToFolder>,
     file_password: ServerAction<SetFilePassword>,
     rename_file: ServerAction<RenameFile>,
+    file_expiry: ServerAction<SetFileExpiry>,
+    file_tags: ServerAction<SetFileTags>,
     create_folder: ServerAction<CreateFolder>,
     delete_folder: ServerAction<DeleteFolder>,
     folder_password: ServerAction<SetFolderPassword>,
@@ -159,6 +161,8 @@ pub fn DashboardLayout() -> impl IntoView {
         move_file: ServerAction::new(),
         file_password: ServerAction::new(),
         rename_file: ServerAction::new(),
+        file_expiry: ServerAction::new(),
+        file_tags: ServerAction::new(),
         create_folder: ServerAction::new(),
         delete_folder: ServerAction::new(),
         folder_password: ServerAction::new(),
@@ -172,6 +176,8 @@ pub fn DashboardLayout() -> impl IntoView {
             actions.move_file.version().get(),
             actions.file_password.version().get(),
             actions.rename_file.version().get(),
+            actions.file_expiry.version().get(),
+            actions.file_tags.version().get(),
             actions.create_folder.version().get(),
             actions.delete_folder.version().get(),
             actions.folder_password.version().get(),
@@ -435,7 +441,9 @@ fn Browse(
                 .filter(|f| type_filter.get().matches(&f.content_type))
                 .filter(|f| {
                     let query = search.get().to_lowercase();
-                    query.is_empty() || f.original_name.to_lowercase().contains(&query)
+                    query.is_empty()
+                        || f.original_name.to_lowercase().contains(&query)
+                        || f.tags.iter().any(|tag| tag.to_lowercase().contains(&query))
                 })
                 .cloned()
                 .collect();
@@ -482,7 +490,7 @@ fn Browse(
                                 {visible
                                     .into_iter()
                                     .map(|file| {
-                                        view! { <FileCard file actions opened_file /> }
+                                        view! { <FileCard file actions opened_file search /> }
                                     })
                                     .collect_view()}
                             </div>
@@ -675,6 +683,7 @@ fn FileCard(
     file: FileSummary,
     actions: Actions,
     opened_file: RwSignal<Option<String>>,
+    search: RwSignal<String>,
 ) -> impl IntoView {
     let (copied, set_copied) = signal(false);
     let (thumb_failed, set_thumb_failed) = signal(false);
@@ -690,6 +699,8 @@ fn FileCard(
     let size = file.size_bytes;
     let date = format_date(&file.created_at).to_string();
     let has_password = file.has_password;
+    let has_expiry = file.expires_at.is_some();
+    let tags = file.tags.clone();
 
     let copy = move |_| {
         copy_to_clipboard(&copy_url);
@@ -726,6 +737,14 @@ fn FileCard(
                     }}
                 </button>
                 {has_password.then(|| view! { <div class="lock-badge"><LockIcon/></div> })}
+                {has_expiry
+                    .then(|| {
+                        view! {
+                            <div class="expiry-badge" title="expires">
+                                <ClockIcon/>
+                            </div>
+                        }
+                    })}
                 <div class="file-actions">
                     <button
                         class="icon-btn"
@@ -757,6 +776,29 @@ fn FileCard(
                     {name.clone()}
                 </p>
                 <p class="file-sub">{format_size(size)}" · "{date}</p>
+                {(!tags.is_empty())
+                    .then(|| {
+                        view! {
+                            <div class="tag-list">
+                                {tags
+                                    .into_iter()
+                                    .map(|tag| {
+                                        let tag_for_click = tag.clone();
+                                        view! {
+                                            <button
+                                                type="button"
+                                                class="tag-chip"
+                                                title="search this tag"
+                                                on:click=move |_| search.set(tag_for_click.clone())
+                                            >
+                                                {tag}
+                                            </button>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </div>
+                        }
+                    })}
             </div>
         </div>
     }
@@ -779,6 +821,10 @@ fn FileModal(
     let (password_input, set_password_input) = signal(String::new());
     let (editing_password, set_editing_password) = signal(false);
     let (name_input, set_name_input) = signal(file.original_name.clone());
+    let (editing_expiry, set_editing_expiry) = signal(false);
+    let (expiry_preset_input, set_expiry_preset_input) = signal("never".to_string());
+    let (editing_tags, set_editing_tags) = signal(false);
+    let (tags_input, set_tags_input) = signal(file.tags.join(", "));
 
     let is_image = file.content_type.starts_with("image/");
     let is_video = file.content_type.starts_with("video/");
@@ -789,10 +835,20 @@ fn FileModal(
     let id_for_move = file.id.clone();
     let id_for_password = file.id.clone();
     let id_for_rename = file.id.clone();
+    let id_for_expiry = file.id.clone();
+    let id_for_tags = file.id.clone();
     let current_folder = file.folder_id.clone();
     let has_password = file.has_password;
+    let has_expiry = file.expires_at.is_some();
     let display_name = file.original_name.clone();
     let name_for_cancel = file.original_name.clone();
+    let expires_display = file
+        .expires_at
+        .as_deref()
+        .map(format_date)
+        .unwrap_or("never")
+        .to_string();
+    let tags_for_display = file.tags.clone();
     let short_hash = file.sha256.get(..12).unwrap_or(&file.sha256).to_string();
 
     let close = move |_| opened_file.set(None);
@@ -900,6 +956,10 @@ fn FileModal(
                             <dd>{format_date(&file.created_at).to_string()}</dd>
                         </div>
                         <div>
+                            <dt>"expires"</dt>
+                            <dd>{expires_display}</dd>
+                        </div>
+                        <div>
                             <dt>"sha256"</dt>
                             <dd class="modal-hash" title=file.sha256.clone()>
                                 {short_hash}"…"
@@ -939,6 +999,122 @@ fn FileModal(
                                 .collect_view()}
                         </select>
                     </div>
+
+                    {(!tags_for_display.is_empty())
+                        .then(|| {
+                            view! {
+                                <div class="tag-list">
+                                    {tags_for_display
+                                        .iter()
+                                        .map(|tag| view! { <span class="tag-chip">{tag.clone()}</span> })
+                                        .collect_view()}
+                                </div>
+                            }
+                        })}
+
+                    {move || {
+                        let id_for_tags = id_for_tags.clone();
+                        editing_tags
+                            .get()
+                            .then(|| {
+                                view! {
+                                    <form
+                                        class="password-inline"
+                                        on:submit=move |ev| {
+                                            ev.prevent_default();
+                                            let tags = tags_input
+                                                .get()
+                                                .split(',')
+                                                .map(|tag| tag.trim().to_string())
+                                                .filter(|tag| !tag.is_empty())
+                                                .collect();
+                                            actions
+                                                .file_tags
+                                                .dispatch(SetFileTags {
+                                                    id: id_for_tags.clone(),
+                                                    tags,
+                                                });
+                                            set_editing_tags.set(false);
+                                        }
+                                    >
+                                        <input
+                                            type="text"
+                                            placeholder="comma-separated tags"
+                                            prop:value=move || tags_input.get()
+                                            on:input=move |ev| {
+                                                set_tags_input.set(event_target_value(&ev))
+                                            }
+                                        />
+                                        <button type="submit" class="btn btn-ghost">
+                                            "save"
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="btn btn-ghost"
+                                            on:click=move |_| set_editing_tags.set(false)
+                                        >
+                                            "cancel"
+                                        </button>
+                                    </form>
+                                }
+                            })
+                    }}
+
+                    {move || {
+                        let id_for_expiry = id_for_expiry.clone();
+                        editing_expiry
+                            .get()
+                            .then(|| {
+                                view! {
+                                    <form
+                                        class="password-inline"
+                                        on:submit=move |ev| {
+                                            ev.prevent_default();
+                                            actions
+                                                .file_expiry
+                                                .dispatch(SetFileExpiry {
+                                                    id: id_for_expiry.clone(),
+                                                    preset: expiry_preset_input.get(),
+                                                });
+                                            set_editing_expiry.set(false);
+                                        }
+                                    >
+                                        <select
+                                            class="folder-select"
+                                            on:change=move |ev| {
+                                                set_expiry_preset_input.set(event_target_value(&ev))
+                                            }
+                                        >
+                                            {EXPIRY_PRESETS
+                                                .iter()
+                                                .map(|(value, label)| {
+                                                    let value = value.to_string();
+                                                    let value_for_select = value.clone();
+                                                    let selected = move || {
+                                                        expiry_preset_input.get() == value_for_select
+                                                    };
+                                                    view! {
+                                                        <option value=value selected=selected>
+                                                            {*label}
+                                                        </option>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </select>
+                                        <button type="submit" class="btn btn-ghost">
+                                            "save"
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="btn btn-ghost"
+                                            on:click=move |_| set_editing_expiry.set(false)
+                                        >
+                                            "cancel"
+                                        </button>
+                                    </form>
+                                }
+                            })
+                    }}
 
                     {move || {
                         let id_for_password = id_for_password.clone();
@@ -1028,6 +1204,22 @@ fn FileModal(
                             on:click=move |_| set_renaming.set(true)
                         >
                             <PencilIcon/>
+                        </button>
+                        <button
+                            type="button"
+                            class="icon-btn"
+                            title="edit tags"
+                            on:click=move |_| set_editing_tags.set(true)
+                        >
+                            <TagIcon/>
+                        </button>
+                        <button
+                            type="button"
+                            class="icon-btn"
+                            title=if has_expiry { "change expiry" } else { "set an expiry" }
+                            on:click=move |_| set_editing_expiry.set(true)
+                        >
+                            <ClockIcon/>
                         </button>
                         <button
                             type="button"

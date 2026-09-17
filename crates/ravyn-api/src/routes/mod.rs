@@ -3,6 +3,8 @@ mod files;
 mod folders;
 mod view;
 
+pub use files::run_expiry_sweep;
+
 use axum::{
     extract::DefaultBodyLimit,
     http::StatusCode,
@@ -25,6 +27,8 @@ pub fn router(state: AppState) -> Router {
         .route("/files/{id}/folder", put(files::set_file_folder))
         .route("/files/{id}/password", put(files::set_file_password))
         .route("/files/{id}/name", put(files::set_file_name))
+        .route("/files/{id}/expiry", put(files::set_file_expiry))
+        .route("/files/{id}/tags", put(files::set_file_tags))
         .route("/files", get(files::list_files))
         .route("/files", post(files::upload_file))
         .route("/folders", post(folders::create_folder))
@@ -88,6 +92,9 @@ pub struct FileSummary {
     pub has_password: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+    pub tags: Vec<String>,
 }
 
 impl From<File> for FileSummary {
@@ -101,6 +108,8 @@ impl From<File> for FileSummary {
             folder_id: file.folder_id.map(|id| id.0),
             has_password: file.password_hash.is_some(),
             created_at: file.created_at,
+            expires_at: file.expires_at,
+            tags: file.tags,
         }
     }
 }

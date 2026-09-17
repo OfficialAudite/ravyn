@@ -188,6 +188,33 @@ can rename their own file afterward from the file detail modal (`PUT
 /files/{id}/name`, checked against the file's owner the same way
 `/files/{id}/password` is).
 
+### Auto-delete
+
+Zipline-style: a fixed set of expiry presets (`ExpiryPreset` in `ravyn-core`) rather
+than a free-form date, from 5 minutes up to 1 year, plus `never`. An admin sets the
+instance-wide default from `/admin`'s auto-delete section
+(`instance_settings.default_expiry_preset`); it's applied once, at upload time, by
+adding the chosen duration to the current time and storing the result as
+`files.expires_at` — not re-evaluated later, so changing the default doesn't affect
+files already uploaded. Anyone can override their own file's expiry afterward from the
+file detail modal's clock icon (`PUT /files/{id}/expiry`), including turning it off
+entirely regardless of the instance default.
+
+Deletion itself happens in a background task (`routes::run_expiry_sweep`, spawned once
+from `main`), which wakes up every 5 minutes, finds every file whose `expires_at` has
+passed regardless of owner, and deletes it the same way `DELETE /files/{id}` does —
+storage, thumbnail, then the database row, in that order, so a crash partway through
+never leaves an orphaned database row pointing at already-deleted storage.
+
+### Tags
+
+Simple, free-text, per-owner tags on a file (`files.tags`, a plain Postgres text
+array — no separate tags table, since there's no shared/autocompleted tag registry to
+join against). Edit a file's tags from its detail modal's tag icon (`PUT
+/files/{id}/tags`, full replace, comma-separated in the UI). The browse page's search
+box matches both filenames and tags, and clicking a tag chip on a file card drops that
+tag straight into the search box.
+
 ## Embeds (Discord, Slack, Twitter)
 
 Every share link already works as a direct image/video link — paste one in Discord

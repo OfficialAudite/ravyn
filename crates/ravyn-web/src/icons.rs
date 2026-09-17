@@ -145,6 +145,40 @@ pub fn PencilIcon() -> impl IntoView {
 }
 
 #[component]
+pub fn ClockIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 3" />
+        </svg>
+    }
+}
+
+#[component]
+pub fn TagIcon() -> impl IntoView {
+    view! {
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <path d="M12.59 2.59a2 2 0 0 0-1.42-.59H4a2 2 0 0 0-2 2v7.17a2 2 0 0 0 .59 1.41l8 8a2 2 0 0 0 2.82 0l7.17-7.17a2 2 0 0 0 0-2.82Z" />
+            <path d="M7 7h.01" />
+        </svg>
+    }
+}
+
+#[component]
 pub fn LockIcon() -> impl IntoView {
     view! {
         <svg

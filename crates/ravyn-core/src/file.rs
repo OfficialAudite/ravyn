@@ -32,4 +32,7 @@ pub struct File {
     pub password_hash: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+    pub tags: Vec<String>,
 }

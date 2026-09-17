@@ -40,6 +40,9 @@ pub struct FileSummary {
     /// own password-protected files preview correctly in their own
     /// dashboard instead of silently failing to load.
     pub raw_url: String,
+    /// `None` if the file never expires.
+    pub expires_at: Option<String>,
+    pub tags: Vec<String>,
 }
 
 /// Everything here talks to `ravyn-api` server-to-server, forwarding the
@@ -107,6 +110,8 @@ pub(crate) mod ssr {
         pub folder_id: Option<String>,
         pub has_password: bool,
         pub created_at: String,
+        pub expires_at: Option<String>,
+        pub tags: Vec<String>,
     }
 
     /// Fills in the direct-to-`ravyn-api` URLs. Shared by every server
@@ -125,6 +130,8 @@ pub(crate) mod ssr {
             folder_id: file.folder_id,
             has_password: file.has_password,
             created_at: file.created_at,
+            expires_at: file.expires_at,
+            tags: file.tags,
         }
     }
 }

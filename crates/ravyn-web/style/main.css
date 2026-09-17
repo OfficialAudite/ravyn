@@ -705,6 +705,52 @@ input[type="password"]:focus {
   height: 12px;
 }
 
+.expiry-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  background: rgba(12, 13, 18, 0.85);
+  border: 1px solid var(--hairline-bright);
+  border-radius: var(--radius-sm);
+  color: var(--fog);
+}
+
+.expiry-badge svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+
+.tag-chip {
+  font: inherit;
+  border: 1px solid var(--hairline-bright);
+  background: var(--panel);
+  color: var(--fog);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+button.tag-chip {
+  cursor: pointer;
+}
+
+button.tag-chip:hover {
+  background: var(--panel-raised);
+  color: var(--paper);
+}
+
 .file-meta {
   padding: 0.6rem 0.7rem 0.7rem;
 }

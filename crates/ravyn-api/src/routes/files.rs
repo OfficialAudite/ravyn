@@ -155,10 +155,38 @@ async fn save_uploaded_part(
     let random_name_length = state.db.get_random_name_length().await.unwrap_or(8);
     let original_name = naming_scheme.generate(&uploaded_name, random_name_length as usize);
 
+    // Same idea, for auto-delete: the instance's default expiry applies
+    // unless the owner sets one of their own afterward (see
+    // `set_file_expiry`) — falls back to no expiry, the safe direction,
+    // rather than the sweep.
+    let expires_at = state
+        .db
+        .get_default_expiry_preset()
+        .await
+        .unwrap_or(ravyn_core::ExpiryPreset::Never)
+        .to_duration()
+        .map(|duration| OffsetDateTime::now_utc() + duration);
+
     if content_type.starts_with("image/") {
-        save_buffered_part(state, owner_id, field, original_name, content_type).await
+        save_buffered_part(
+            state,
+            owner_id,
+            field,
+            original_name,
+            content_type,
+            expires_at,
+        )
+        .await
     } else {
-        save_streamed_part(state, owner_id, field, original_name, content_type).await
+        save_streamed_part(
+            state,
+            owner_id,
+            field,
+            original_name,
+            content_type,
+            expires_at,
+        )
+        .await
     }
 }
 
@@ -168,6 +196,7 @@ async fn save_buffered_part(
     field: axum::extract::multipart::Field<'_>,
     original_name: String,
     content_type: String,
+    expires_at: Option<OffsetDateTime>,
 ) -> Result<File, (StatusCode, String)> {
     let bytes = field
         .bytes()
@@ -226,6 +255,8 @@ async fn save_buffered_part(
         folder_id: None,
         password_hash: None,
         created_at: OffsetDateTime::now_utc(),
+        expires_at,
+        tags: Vec::new(),
     };
 
     state.db.insert_file(&file).await.map_err(|err| {
@@ -256,6 +287,7 @@ async fn save_streamed_part(
     mut field: axum::extract::multipart::Field<'_>,
     original_name: String,
     content_type: String,
+    expires_at: Option<OffsetDateTime>,
 ) -> Result<File, (StatusCode, String)> {
     let storage_error = || {
         (
@@ -344,6 +376,8 @@ async fn save_streamed_part(
         folder_id: None,
         password_hash: None,
         created_at: OffsetDateTime::now_utc(),
+        expires_at,
+        tags: Vec::new(),
     };
 
     state.db.insert_file(&file).await.map_err(|err| {
@@ -606,4 +640,122 @@ pub async fn set_file_name(
     }
 
     StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SetFileExpiryRequest {
+    preset: String,
+}
+
+/// Same "instance default is just a starting point" pattern as naming: the
+/// owner can always pick a different preset for one file, including turning
+/// auto-delete off entirely (`"never"`) even when the instance default would
+/// otherwise apply one.
+pub async fn set_file_expiry(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetFileExpiryRequest>,
+) -> Response {
+    let file = match state.db.get_file(FileId(id)).await {
+        Ok(Some(file)) => file,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to look up file");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if file.owner_id != user.id {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let Some(preset) = ravyn_core::ExpiryPreset::parse(&body.preset) else {
+        return (StatusCode::BAD_REQUEST, "invalid expiry preset").into_response();
+    };
+    let expires_at = preset
+        .to_duration()
+        .map(|duration| OffsetDateTime::now_utc() + duration);
+
+    if let Err(err) = state.db.set_file_expiry(file.id, expires_at).await {
+        tracing::error!(%err, "failed to set file expiry");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SetFileTagsRequest {
+    tags: Vec<String>,
+}
+
+/// Full replace, same as `set_file_folder` — simpler than an add/remove API
+/// for a feature this small. Tags are trimmed, emptied of blanks, and
+/// deduplicated here rather than trusted from the client.
+pub async fn set_file_tags(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetFileTagsRequest>,
+) -> Response {
+    let file = match state.db.get_file(FileId(id)).await {
+        Ok(Some(file)) => file,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to look up file");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if file.owner_id != user.id {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let mut tags: Vec<String> = Vec::new();
+    for tag in body.tags {
+        let tag = tag.trim().to_string();
+        if !tag.is_empty() && !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+
+    if let Err(err) = state.db.set_file_tags(file.id, tags).await {
+        tracing::error!(%err, "failed to set file tags");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Runs forever as a background task (spawned once from `main`), deleting
+/// any file whose `expires_at` has passed. A fixed 5-minute interval rather
+/// than an env-configurable one: this is an internal implementation detail,
+/// not something a self-hosted operator needs to tune, and the coarsest
+/// preset (`ExpiryPreset::Minutes5`) already tolerates this much slack.
+pub async fn run_expiry_sweep(state: AppState) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+    loop {
+        ticker.tick().await;
+
+        let expired = match state.db.list_expired_files().await {
+            Ok(files) => files,
+            Err(err) => {
+                tracing::error!(%err, "failed to list expired files");
+                continue;
+            }
+        };
+
+        for file in expired {
+            if let Err(err) = state.storage.delete(&file.storage_key).await {
+                tracing::warn!(%err, "failed to delete expired file from storage");
+                continue;
+            }
+            let _ = state.thumbnails.delete(&thumbnail_key(file.id)).await;
+            match state.db.delete_file(file.id).await {
+                Ok(()) => tracing::info!(file_id = %file.id.0, "deleted expired file"),
+                Err(err) => tracing::error!(%err, "failed to delete expired file record"),
+            }
+        }
+    }
 }

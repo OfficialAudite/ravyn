@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::format::{format_date, format_size, format_type_breakdown};
+use crate::format::{format_date, format_size, format_type_breakdown, EXPIRY_PRESETS};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
     get_admin_stats, get_instance_settings, list_invites, list_users, AdminUserInfo, CreateInvite,
@@ -75,6 +75,7 @@ fn AdminTabs() -> impl IntoView {
                     <InstanceStatsSection/>
                     <RegistrationSection/>
                     <NamingSchemeSection/>
+                    <ExpirySection/>
                 }
                     .into_any()
             }
@@ -189,6 +190,7 @@ fn RegistrationModeForm(
                         registration_mode: Some(mode.get()),
                         naming_scheme: None,
                         random_name_length: None,
+                        default_expiry_preset: None,
                     });
             }
         >
@@ -279,6 +281,7 @@ fn NamingSchemeForm(
                         registration_mode: None,
                         naming_scheme: Some(scheme.get()),
                         random_name_length: Some(length),
+                        default_expiry_preset: None,
                     });
             }
         >
@@ -325,6 +328,99 @@ fn NamingSchemeForm(
             </button>
             {move || {
                 scheme_action
+                    .value()
+                    .get()
+                    .map(|result| match result {
+                        Ok(_) => view! { <p class="settings-hint">"saved."</p> }.into_any(),
+                        Err(err) => view! { <p class="form-error">{err.to_string()}</p> }.into_any(),
+                    })
+            }}
+        </form>
+    }
+}
+
+#[component]
+fn ExpirySection() -> impl IntoView {
+    let expiry_action = ServerAction::<SetInstanceSettings>::new();
+    let settings = Resource::new(
+        move || expiry_action.version().get(),
+        |_| get_instance_settings(),
+    );
+
+    view! {
+        <div class="settings-section">
+            <h3>"auto-delete"</h3>
+            <p class="settings-hint">
+                "how long a freshly uploaded file lives before it's deleted automatically, "
+                "instance-wide. anyone can still pick a different expiry for their own file "
+                "afterward from the file's details."
+            </p>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    settings
+                        .get()
+                        .map(|result| match result {
+                            Ok(settings) => view! { <ExpiryForm settings expiry_action /> }
+                                .into_any(),
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load auto-delete settings"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn ExpiryForm(
+    settings: InstanceSettings,
+    expiry_action: ServerAction<SetInstanceSettings>,
+) -> impl IntoView {
+    let (preset, set_preset) = signal(settings.default_expiry_preset);
+
+    view! {
+        <form
+            class="embed-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                expiry_action
+                    .dispatch(SetInstanceSettings {
+                        registration_mode: None,
+                        naming_scheme: None,
+                        random_name_length: None,
+                        default_expiry_preset: Some(preset.get()),
+                    });
+            }
+        >
+            <div class="field">
+                <label for="default-expiry-preset">"default expiry"</label>
+                <select
+                    id="default-expiry-preset"
+                    class="folder-select"
+                    on:change=move |ev| set_preset.set(event_target_value(&ev))
+                >
+                    {EXPIRY_PRESETS
+                        .iter()
+                        .map(|(value, label)| {
+                            let value = value.to_string();
+                            let value_for_select = value.clone();
+                            let selected = move || preset.get() == value_for_select;
+                            view! {
+                                <option value=value selected=selected>
+                                    {*label}
+                                </option>
+                            }
+                        })
+                        .collect_view()}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">
+                "save"
+            </button>
+            {move || {
+                expiry_action
                     .value()
                     .get()
                     .map(|result| match result {

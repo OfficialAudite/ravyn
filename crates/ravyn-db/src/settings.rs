@@ -1,4 +1,4 @@
-use ravyn_core::{NamingScheme, RegistrationMode};
+use ravyn_core::{ExpiryPreset, NamingScheme, RegistrationMode};
 
 use crate::{Db, DbError};
 
@@ -58,6 +58,27 @@ impl Db {
     pub async fn set_random_name_length(&self, length: i64) -> Result<(), DbError> {
         sqlx::query("update instance_settings set random_name_length = $1 where id = 1")
             .bind(length as i32)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Falls back to `Never` if unrecognized — the safe default, since it
+    /// reproduces pre-auto-delete behavior rather than starting to silently
+    /// delete files.
+    pub async fn get_default_expiry_preset(&self) -> Result<ExpiryPreset, DbError> {
+        let raw: String =
+            sqlx::query_scalar("select default_expiry_preset from instance_settings where id = 1")
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(ExpiryPreset::parse(&raw).unwrap_or(ExpiryPreset::Never))
+    }
+
+    pub async fn set_default_expiry_preset(&self, preset: ExpiryPreset) -> Result<(), DbError> {
+        sqlx::query("update instance_settings set default_expiry_preset = $1 where id = 1")
+            .bind(preset.as_str())
             .execute(&self.pool)
             .await?;
 

@@ -42,6 +42,9 @@ async fn main() {
         storage,
         thumbnails,
     };
+
+    tokio::spawn(routes::run_expiry_sweep(state.clone()));
+
     let app = routes::router(state);
 
     let addr: SocketAddr = std::env::var("LISTEN_ADDR")

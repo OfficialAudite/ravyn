@@ -334,6 +334,7 @@ pub struct InstanceSettings {
     pub registration_mode: String,
     pub naming_scheme: String,
     pub random_name_length: i64,
+    pub default_expiry_preset: String,
 }
 
 #[server]
@@ -361,15 +362,16 @@ pub async fn get_instance_settings() -> Result<InstanceSettings, ServerFnError> 
         .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
-/// Every argument optional so the registration form and the naming-scheme
-/// form (two independent forms on the same admin page) can each save just
-/// their own setting without clobbering the other's — mirrors
-/// `SetInstanceSettingsRequest` on the API side.
+/// Every argument optional so the registration form, the naming-scheme
+/// form, and the auto-delete form (three independent forms on the same
+/// admin page) can each save just their own setting without clobbering the
+/// others' — mirrors `SetInstanceSettingsRequest` on the API side.
 #[server]
 pub async fn set_instance_settings(
     registration_mode: Option<String>,
     naming_scheme: Option<String>,
     random_name_length: Option<i64>,
+    default_expiry_preset: Option<String>,
 ) -> Result<(), ServerFnError> {
     use crate::server_fns::ssr;
 
@@ -384,6 +386,7 @@ pub async fn set_instance_settings(
             "registration_mode": registration_mode,
             "naming_scheme": naming_scheme,
             "random_name_length": random_name_length,
+            "default_expiry_preset": default_expiry_preset,
         }))
         .send()
         .await

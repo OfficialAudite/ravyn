@@ -16,6 +16,8 @@ struct FileRow {
     folder_id: Option<Uuid>,
     password_hash: Option<String>,
     created_at: OffsetDateTime,
+    expires_at: Option<OffsetDateTime>,
+    tags: Vec<String>,
 }
 
 impl From<FileRow> for File {
@@ -31,6 +33,8 @@ impl From<FileRow> for File {
             folder_id: row.folder_id.map(FolderId),
             password_hash: row.password_hash,
             created_at: row.created_at,
+            expires_at: row.expires_at,
+            tags: row.tags,
         }
     }
 }
@@ -38,8 +42,8 @@ impl From<FileRow> for File {
 impl Db {
     pub async fn insert_file(&self, file: &File) -> Result<(), DbError> {
         sqlx::query(
-            "insert into files (id, owner_id, original_name, storage_key, content_type, size_bytes, sha256, folder_id, password_hash, created_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            "insert into files (id, owner_id, original_name, storage_key, content_type, size_bytes, sha256, folder_id, password_hash, created_at, expires_at, tags)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(file.id.0)
         .bind(file.owner_id.0)
@@ -51,6 +55,8 @@ impl Db {
         .bind(file.folder_id.map(|id| id.0))
         .bind(&file.password_hash)
         .bind(file.created_at)
+        .bind(file.expires_at)
+        .bind(&file.tags)
         .execute(&self.pool)
         .await?;
 
@@ -142,5 +148,41 @@ impl Db {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn set_file_expiry(
+        &self,
+        id: FileId,
+        expires_at: Option<OffsetDateTime>,
+    ) -> Result<(), DbError> {
+        sqlx::query("update files set expires_at = $2 where id = $1")
+            .bind(id.0)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn set_file_tags(&self, id: FileId, tags: Vec<String>) -> Result<(), DbError> {
+        sqlx::query("update files set tags = $2 where id = $1")
+            .bind(id.0)
+            .bind(tags)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Feeds the background expiry sweep (`routes::files::run_expiry_sweep`)
+    /// — every file whose timer has already run out, regardless of owner.
+    pub async fn list_expired_files(&self) -> Result<Vec<File>, DbError> {
+        let rows = sqlx::query_as::<_, FileRow>(
+            "select * from files where expires_at is not null and expires_at < now()",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(File::from).collect())
     }
 }

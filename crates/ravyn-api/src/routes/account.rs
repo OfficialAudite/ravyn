@@ -9,8 +9,8 @@ use axum_extra::extract::{
     CookieJar,
 };
 use ravyn_core::{
-    auth as core_auth, ApiToken, ApiTokenId, EmbedSettings, Invite, InviteId, NamingScheme,
-    RegistrationMode, User, UserId,
+    auth as core_auth, ApiToken, ApiTokenId, EmbedSettings, ExpiryPreset, Invite, InviteId,
+    NamingScheme, RegistrationMode, User, UserId,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -229,6 +229,7 @@ pub struct SetInstanceSettingsRequest {
     registration_mode: Option<String>,
     naming_scheme: Option<String>,
     random_name_length: Option<i64>,
+    default_expiry_preset: Option<String>,
 }
 
 pub async fn get_instance_settings(
@@ -254,11 +255,17 @@ pub async fn get_instance_settings(
         }
     };
     let random_name_length = state.db.get_random_name_length().await.unwrap_or(8);
+    let default_expiry_preset = state
+        .db
+        .get_default_expiry_preset()
+        .await
+        .unwrap_or(ExpiryPreset::Never);
 
     Json(serde_json::json!({
         "registration_mode": mode.as_str(),
         "naming_scheme": naming_scheme.as_str(),
         "random_name_length": random_name_length,
+        "default_expiry_preset": default_expiry_preset.as_str(),
     }))
     .into_response()
 }
@@ -302,6 +309,16 @@ pub async fn set_instance_settings(
         let length = length.clamp(MIN_RANDOM_NAME_LENGTH, MAX_RANDOM_NAME_LENGTH);
         if let Err(err) = state.db.set_random_name_length(length).await {
             tracing::error!(%err, "failed to save random name length");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    if let Some(raw_preset) = body.default_expiry_preset {
+        let Some(preset) = ExpiryPreset::parse(&raw_preset) else {
+            return (StatusCode::BAD_REQUEST, "invalid expiry preset").into_response();
+        };
+        if let Err(err) = state.db.set_default_expiry_preset(preset).await {
+            tracing::error!(%err, "failed to save default expiry preset");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
