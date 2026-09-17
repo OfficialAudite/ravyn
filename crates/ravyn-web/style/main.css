@@ -183,6 +183,11 @@ input[type="password"]:focus {
   background: var(--panel-raised);
 }
 
+.btn-ghost.active {
+  background: var(--panel-raised);
+  border-color: var(--iris-1);
+}
+
 .btn-danger {
   background: transparent;
   border: 1px solid var(--hairline-bright);
@@ -535,6 +540,24 @@ input[type="password"]:focus {
   margin-bottom: 1.25rem;
 }
 
+.bulk-actions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  margin: -0.5rem 0 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--hairline-bright);
+  border-radius: var(--radius-sm);
+}
+
+.bulk-actions-count {
+  font-size: 0.8rem;
+  color: var(--fog);
+  margin-right: auto;
+}
+
 .search-field {
   display: flex;
   align-items: center;
@@ -739,6 +762,34 @@ input[type="password"]:focus {
 .lock-badge svg {
   width: 12px;
   height: 12px;
+}
+
+.select-badge {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  background: rgba(12, 13, 18, 0.85);
+  border: 1.5px solid var(--hairline-bright);
+  border-radius: 999px;
+  color: var(--paper);
+}
+
+.select-badge.checked {
+  background: var(--iris-2);
+  border-color: var(--iris-2);
+}
+
+.select-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+.file-card.selected {
+  border-color: var(--iris-2);
 }
 
 .expiry-badge {

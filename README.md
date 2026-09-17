@@ -354,6 +354,12 @@ everything else per-owner.
   folder, set or clear its password, copy the share link, download it, or delete it,
   all without leaving the grid. The grid card itself keeps just a thumbnail, name,
   and two hover-only quick actions (copy link, delete).
+- **Bulk actions**: the browse page's **select** button turns every card into a
+  checkbox — clicking one toggles it instead of opening the detail modal. With one or
+  more selected, a bar above the grid lets you move all of them to a folder or delete
+  all of them at once. Purely a frontend feature: it just dispatches the existing
+  per-file `PUT /files/{id}/folder` / `DELETE /files/{id}` endpoints once per selected
+  file rather than needing a bulk API of its own.
 
 ## Web UI pages
 

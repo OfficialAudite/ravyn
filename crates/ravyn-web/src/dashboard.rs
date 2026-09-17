@@ -728,6 +728,8 @@ fn Browse(
     let search = RwSignal::new(String::new());
     let type_filter = RwSignal::new(TypeFilter::All);
     let sort_order = RwSignal::new(SortOrder::Newest);
+    let select_mode = RwSignal::new(false);
+    let selected = RwSignal::new(std::collections::HashSet::<String>::new());
 
     let visible_files = {
         let files = files.clone();
@@ -753,6 +755,7 @@ fn Browse(
     };
 
     let folders_for_modal = folders.clone();
+    let folders_for_bulk = folders.clone();
     let files_for_modal = files.clone();
 
     view! {
@@ -760,7 +763,22 @@ fn Browse(
             <FolderSidebar folders=folders.clone() selected_folder actions/>
 
             <div class="workspace-main">
-                <FilterBar search type_filter sort_order/>
+                <FilterBar search type_filter sort_order select_mode selected/>
+
+                {move || {
+                    select_mode
+                        .get()
+                        .then(|| {
+                            view! {
+                                <BulkActionsBar
+                                    selected
+                                    select_mode
+                                    folders=folders_for_bulk.clone()
+                                    actions
+                                />
+                            }
+                        })
+                }}
 
                 {move || {
                     let visible = visible_files();
@@ -790,7 +808,16 @@ fn Browse(
                                 {visible
                                     .into_iter()
                                     .map(|file| {
-                                        view! { <FileCard file actions opened_file search /> }
+                                        view! {
+                                            <FileCard
+                                                file
+                                                actions
+                                                opened_file
+                                                search
+                                                select_mode
+                                                selected
+                                            />
+                                        }
                                     })
                                     .collect_view()}
                             </div>
@@ -935,6 +962,8 @@ fn FilterBar(
     search: RwSignal<String>,
     type_filter: RwSignal<TypeFilter>,
     sort_order: RwSignal<SortOrder>,
+    select_mode: RwSignal<bool>,
+    selected: RwSignal<std::collections::HashSet<String>>,
 ) -> impl IntoView {
     view! {
         <div class="filter-bar">
@@ -974,6 +1003,83 @@ fn FilterBar(
                 <option value="name">"name"</option>
                 <option value="size">"largest first"</option>
             </select>
+
+            <button
+                type="button"
+                class="btn btn-ghost"
+                class:active=move || select_mode.get()
+                on:click=move |_| {
+                    if select_mode.get() {
+                        selected.set(Default::default());
+                    }
+                    select_mode.update(|mode| *mode = !*mode);
+                }
+            >
+                {move || if select_mode.get() { "cancel select" } else { "select" }}
+            </button>
+        </div>
+    }
+}
+
+/// Only mounted while `select_mode` is on (`Browse`'s own `{move || ...}`
+/// gate) — everything here acts on `selected`, so there's nothing useful
+/// to show while it's necessarily empty.
+#[component]
+fn BulkActionsBar(
+    selected: RwSignal<std::collections::HashSet<String>>,
+    select_mode: RwSignal<bool>,
+    folders: Vec<FolderSummary>,
+    actions: Actions,
+) -> impl IntoView {
+    let clear = move || {
+        selected.set(Default::default());
+        select_mode.set(false);
+    };
+
+    view! {
+        <div class="bulk-actions-bar">
+            <span class="bulk-actions-count">
+                {move || {
+                    let count = selected.get().len();
+                    format!("{count} selected")
+                }}
+            </span>
+            <select
+                class="folder-select"
+                on:change=move |ev| {
+                    let value = event_target_value(&ev);
+                    let folder_id = (!value.is_empty()).then_some(value);
+                    for id in selected.get_untracked() {
+                        actions
+                            .move_file
+                            .dispatch(MoveFileToFolder { id, folder_id: folder_id.clone() });
+                    }
+                    clear();
+                }
+            >
+                <option value="">"no folder"</option>
+                {folders
+                    .into_iter()
+                    .map(|folder| {
+                        view! { <option value=folder.id.clone()>{folder.name.clone()}</option> }
+                    })
+                    .collect_view()}
+            </select>
+            <button
+                type="button"
+                class="btn btn-ghost"
+                on:click=move |_| {
+                    for id in selected.get_untracked() {
+                        actions.delete_file.dispatch(DeleteFile { id });
+                    }
+                    clear();
+                }
+            >
+                "delete selected"
+            </button>
+            <button type="button" class="btn btn-ghost" on:click=move |_| clear()>
+                "cancel"
+            </button>
         </div>
     }
 }
@@ -984,6 +1090,8 @@ fn FileCard(
     actions: Actions,
     opened_file: RwSignal<Option<String>>,
     search: RwSignal<String>,
+    select_mode: RwSignal<bool>,
+    selected: RwSignal<std::collections::HashSet<String>>,
 ) -> impl IntoView {
     let (copied, set_copied) = signal(false);
     let (thumb_failed, set_thumb_failed) = signal(false);
@@ -993,6 +1101,9 @@ fn FileCard(
     let thumbnail_url = file.thumbnail_url.clone();
     let id_for_delete = file.id.clone();
     let id_for_click = file.id.clone();
+    let id_for_toggle = file.id.clone();
+    let id_for_card_class = file.id.clone();
+    let id_for_badge = file.id.clone();
     let name = file.original_name.clone();
     let name_for_alt = name.clone();
     let content_type = file.content_type.clone();
@@ -1012,13 +1123,28 @@ fn FileCard(
     };
 
     view! {
-        <div class="file-card">
+        <div
+            class="file-card"
+            class:selected=move || selected.get().contains(&id_for_card_class)
+        >
             <div class="file-thumb">
                 <button
                     type="button"
                     class="file-thumb-btn"
                     title="view details"
-                    on:click=move |_| opened_file.set(Some(id_for_click.clone()))
+                    on:click=move |_| {
+                        if select_mode.get() {
+                            let id = id_for_toggle.clone();
+                            selected
+                                .update(|set| {
+                                    if !set.insert(id.clone()) {
+                                        set.remove(&id);
+                                    }
+                                });
+                        } else {
+                            opened_file.set(Some(id_for_click.clone()));
+                        }
+                    }
                 >
                     {move || {
                         if is_image && !thumb_failed.get() {
@@ -1036,6 +1162,18 @@ fn FileCard(
                         }
                     }}
                 </button>
+                {move || {
+                    select_mode
+                        .get()
+                        .then(|| {
+                            let checked = selected.get().contains(&id_for_badge);
+                            view! {
+                                <div class="select-badge" class:checked=checked>
+                                    {checked.then(|| view! { <CheckIcon/> })}
+                                </div>
+                            }
+                        })
+                }}
                 {has_password.then(|| view! { <div class="lock-badge"><LockIcon/></div> })}
                 {has_expiry
                     .then(|| {
