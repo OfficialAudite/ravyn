@@ -56,6 +56,16 @@ pub async fn view_file(
             .into_response();
     }
 
+    // A readable, in-page view for text pastes (pasted snippets, or any
+    // plain-text upload) rather than either a redirect to a bare raw
+    // response or, worse, the generic embed page's fallback
+    // "<p>title</p><a>download</a>" — independent of the owner's embed
+    // setting, since this is about making text legible, not social-preview
+    // metadata.
+    if is_text_content(&file.content_type) {
+        return render_text_view(&state, &file, &public_base_url(&headers)).await;
+    }
+
     let embed = match state.db.get_embed_settings(file.owner_id).await {
         Ok(settings) => settings,
         Err(err) => {
@@ -87,6 +97,65 @@ fn public_base_url(headers: &HeaderMap) -> String {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("localhost");
     format!("{proto}://{host}")
+}
+
+fn is_text_content(content_type: &str) -> bool {
+    content_type.starts_with("text/") || content_type == "application/json"
+}
+
+/// Above this, a text file falls back to the plain raw response instead of
+/// being inlined into an HTML page — a pastebin-style preview makes sense
+/// for a snippet, not for a multi-megabyte log dump.
+const MAX_INLINE_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+
+async fn render_text_view(state: &AppState, file: &File, base: &str) -> Response {
+    if file.size_bytes > MAX_INLINE_TEXT_BYTES {
+        return Redirect::to(&format!("/files/{}", file.id.0)).into_response();
+    }
+
+    let bytes = match state.storage.get(&file.storage_key).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::error!(%err, "failed to read file from storage");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let title = escape_html(&file.original_name);
+    let raw_url = escape_html(&format!("{base}/files/{}", file.id.0));
+    // Escaped before ever touching the HTML string — this is arbitrary
+    // user-pasted content, so treating it as anything but plain text here
+    // would be a stored XSS hole.
+    let body = escape_html(&String::from_utf8_lossy(&bytes));
+
+    Html(format!(
+        r#"<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ margin:0; min-height:100vh; background:#0c0d12; color:#eeecf5;
+         font-family: ui-sans-serif, system-ui, sans-serif; }}
+  header {{ display:flex; align-items:center; justify-content:space-between; gap:1rem;
+            padding:0.85rem 1.25rem; border-bottom:1px solid #282a35; position:sticky; top:0;
+            background:#0c0d12; }}
+  header span {{ font-size:0.85rem; color:#9291a3; overflow:hidden; text-overflow:ellipsis;
+                 white-space:nowrap; }}
+  header a {{ color:#5b8dff; text-decoration:none; font-size:0.85rem; flex-shrink:0; }}
+  header a:hover {{ text-decoration:underline; }}
+  pre {{ margin:0; padding:1.25rem; overflow-x:auto;
+        font-family: ui-monospace, "SF Mono", Consolas, monospace;
+        font-size:0.85rem; line-height:1.5; white-space:pre-wrap; word-break:break-word; }}
+</style></head>
+<body>
+  <header>
+    <span title="{title}">{title}</span>
+    <a href="{raw_url}" download>download raw</a>
+  </header>
+  <pre>{body}</pre>
+</body></html>"#
+    ))
+    .into_response()
 }
 
 fn escape_html(input: &str) -> String {

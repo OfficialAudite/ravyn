@@ -25,10 +25,14 @@ reqwest = { version = "0.12", default-features = false, features = [
 ], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = { version = "=0.2.100", optional = true }
+js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "DataTransfer",
+    "DataTransferItem",
+    "DataTransferItemList",
     "File",
     "FileList",
+    "FilePropertyBag",
     "HtmlInputElement",
     "HtmlFormElement",
     "Navigator",
@@ -42,6 +46,7 @@ base64 = "0.22"
 [features]
 hydrate = [
     "dep:wasm-bindgen",
+    "dep:js-sys",
     "dep:web-sys",
     "dep:console_error_panic_hook",
     "leptos/hydrate",

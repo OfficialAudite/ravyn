@@ -254,6 +254,25 @@ container in place rather than decoding and re-encoding pixels, so a stripped fi
 is byte-identical to the original except for the removed EXIF segment — no
 recompression, no quality loss.
 
+### Text snippets (pastebin mode)
+
+`/upload` has a **paste text** tab alongside the file dropzone. It needs no
+server-side upload path of its own: pasted text becomes a synthetic `File` in the
+browser (`paste_text_and_submit` in `browser.rs`, using `DataTransfer`/`File` the
+same way a real drag-drop does) and goes through the exact same `/upload` multipart
+pipeline as picking a file from disk — naming, quotas, and auto-delete all apply
+identically. An empty filename defaults to `paste.txt`; a filename without an
+extension gets `.txt` appended.
+
+What *is* pastebin-specific is how it's viewed: `GET /v/{id}` normally either
+redirects to the raw file or renders an Open Graph embed page, but for any
+`text/*` (or `application/json`) file under 2&nbsp;MB it renders a proper in-page
+text view instead — a dark, monospace `<pre>` block with a download link, rather
+than a bare raw response or the embed page's generic `<p>title</p><a>download</a>`
+fallback. This applies to any text file, not just ones created via paste. The text
+is HTML-escaped before being embedded in the page, since it's arbitrary
+user-supplied content.
+
 ## Embeds (Discord, Slack, Twitter)
 
 Every share link already works as a direct image/video link — paste one in Discord

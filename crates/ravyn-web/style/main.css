@@ -292,6 +292,41 @@ input[type="password"]:focus {
   margin: 0;
 }
 
+.paste-text form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.paste-filename {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.paste-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 320px;
+  padding: 0.75rem 0.9rem;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.paste-textarea:focus {
+  outline: none;
+  border-color: var(--iris-1);
+}
+
+.hidden-file-input {
+  display: none;
+}
+
 /* section headers ------------------------------------------------------- */
 
 .section-head {

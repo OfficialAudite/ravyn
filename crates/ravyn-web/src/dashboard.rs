@@ -1,7 +1,9 @@
 use leptos::prelude::*;
 use leptos_router::components::{Outlet, A};
 
-use crate::browser::{copy_to_clipboard, submit_input_form, sync_dropped_files};
+use crate::browser::{
+    copy_to_clipboard, paste_text_and_submit, submit_input_form, sync_dropped_files,
+};
 use crate::format::{format_date, format_size, EXPIRY_PRESETS};
 use crate::icons::{
     CheckIcon, ClockIcon, CloseIcon, CopyIcon, DownloadIcon, ExternalLinkIcon, FileTypeIcon,
@@ -427,13 +429,40 @@ fn LoginForm(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UploadMode {
+    Files,
+    Paste,
+}
+
 #[component]
 pub fn UploadPage() -> impl IntoView {
+    let mode = RwSignal::new(UploadMode::Files);
+
     view! {
         <div class="section-head">
             <h2>"upload"</h2>
         </div>
-        <Dropzone/>
+        <div class="settings-tabs">
+            <button
+                class="settings-tab"
+                class:active=move || mode.get() == UploadMode::Files
+                on:click=move |_| mode.set(UploadMode::Files)
+            >
+                "files"
+            </button>
+            <button
+                class="settings-tab"
+                class:active=move || mode.get() == UploadMode::Paste
+                on:click=move |_| mode.set(UploadMode::Paste)
+            >
+                "paste text"
+            </button>
+        </div>
+        {move || match mode.get() {
+            UploadMode::Files => view! { <Dropzone/> }.into_any(),
+            UploadMode::Paste => view! { <PasteText/> }.into_any(),
+        }}
     }
 }
 
@@ -472,6 +501,56 @@ fn Dropzone() -> impl IntoView {
                         "upload"
                     </button>
                 </noscript>
+            </form>
+        </div>
+    }
+}
+
+/// A pastebin-style alternative to picking a file: builds a synthetic text
+/// file client-side (`paste_text_and_submit`) and pushes it through the
+/// exact same `/upload` multipart pipeline `Dropzone` uses, so it needs no
+/// server-side changes of its own — naming, quotas, and expiry all just
+/// work. JS-only (unlike `Dropzone`, no `<noscript>` fallback makes sense
+/// here: there's no plain-HTML way to turn typed text into an uploadable
+/// file).
+#[component]
+fn PasteText() -> impl IntoView {
+    let (text, set_text) = signal(String::new());
+    let (filename, set_filename) = signal(String::new());
+
+    let submit = move |_| {
+        let content = text.get();
+        if content.trim().is_empty() {
+            return;
+        }
+        let name = filename.get();
+        let name = match name.trim() {
+            "" => "paste.txt".to_string(),
+            name if name.contains('.') => name.to_string(),
+            name => format!("{name}.txt"),
+        };
+        paste_text_and_submit("paste-file-input", &name, &content);
+    };
+
+    view! {
+        <div class="paste-text">
+            <form method="post" action="/upload" enctype="multipart/form-data">
+                <input
+                    type="text"
+                    class="paste-filename"
+                    placeholder="filename (optional, e.g. notes.txt)"
+                    on:input=move |ev| set_filename.set(event_target_value(&ev))
+                />
+                <textarea
+                    class="paste-textarea"
+                    placeholder="paste or type your text here..."
+                    on:input=move |ev| set_text.set(event_target_value(&ev))
+                >
+                </textarea>
+                <input id="paste-file-input" class="hidden-file-input" type="file" name="file" />
+                <button type="button" class="btn btn-primary" on:click=submit>
+                    "create paste"
+                </button>
             </form>
         </div>
     }

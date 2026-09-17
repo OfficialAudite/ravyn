@@ -2994,6 +2994,7 @@ dependencies = [
  "axum 0.7.9",
  "base64",
  "console_error_panic_hook",
+ "js-sys",
  "leptos",
  "leptos_axum",
  "leptos_meta",
