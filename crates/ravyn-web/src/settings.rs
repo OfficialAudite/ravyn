@@ -171,7 +171,7 @@ fn EmbedForm(
     let (enabled, set_enabled) = signal(settings.enabled);
     let (title, set_title) = signal(settings.title.unwrap_or_default());
     let (description, set_description) = signal(settings.description.unwrap_or_default());
-    let (color, set_color) = signal(settings.color.unwrap_or_else(|| "#5b8dff".to_string()));
+    let (color, set_color) = signal(settings.color.unwrap_or_else(|| "#5b7fe0".to_string()));
     let (site_name, set_site_name) = signal(settings.site_name.unwrap_or_default());
 
     view! {

@@ -10,10 +10,8 @@
   --paper: #eeecf5;
   --danger: #ff6b7a;
 
-  --iris-1: #5b8dff;
-  --iris-2: #3ee6c4;
-  --iris-3: #b26bff;
-  --sheen: linear-gradient(115deg, var(--iris-1) 0%, var(--iris-3) 55%, var(--iris-2) 100%);
+  --accent: #5b7fe0;
+  --accent-soft: rgba(91, 127, 224, 0.14);
 
   --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-body: "Manrope", ui-sans-serif, system-ui, sans-serif;
@@ -31,12 +29,7 @@ body {
   margin: 0;
   min-height: 100vh;
   background: var(--ink);
-  background-image: radial-gradient(
-      ellipse 900px 500px at 15% -10%,
-      rgba(91, 141, 255, 0.14),
-      transparent 60%
-    ),
-    radial-gradient(ellipse 800px 500px at 100% 0%, rgba(178, 107, 255, 0.1), transparent 55%);
+  background-image: radial-gradient(ellipse 900px 500px at 15% -10%, var(--accent-soft), transparent 60%);
   background-repeat: no-repeat;
   color: var(--paper);
   font-family: var(--font-body);
@@ -44,7 +37,7 @@ body {
 }
 
 ::selection {
-  background: rgba(91, 141, 255, 0.35);
+  background: var(--accent-soft);
 }
 
 a {
@@ -58,7 +51,7 @@ input {
 }
 
 :focus-visible {
-  outline: 2px solid var(--iris-1);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
@@ -76,10 +69,7 @@ main {
   font-weight: 700;
   font-size: 1.5rem;
   letter-spacing: -0.02em;
-  background: var(--sheen);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--paper);
   margin: 0;
 }
 
@@ -140,7 +130,7 @@ input[type="password"] {
 
 input[type="text"]:focus,
 input[type="password"]:focus {
-  border-color: var(--iris-1);
+  border-color: var(--accent);
 }
 
 .btn {
@@ -160,12 +150,12 @@ input[type="password"]:focus {
 }
 
 .btn-primary {
-  background: var(--sheen);
-  color: #0a0a10;
+  background: var(--accent);
+  color: var(--paper);
 }
 
 .btn-primary:hover {
-  filter: brightness(1.08);
+  filter: brightness(1.1);
 }
 
 .btn-block {
@@ -185,7 +175,7 @@ input[type="password"]:focus {
 
 .btn-ghost.active {
   background: var(--panel-raised);
-  border-color: var(--iris-1);
+  border-color: var(--accent);
 }
 
 .btn-danger {
@@ -254,11 +244,11 @@ input[type="password"]:focus {
 }
 
 .dropzone:hover {
-  border-color: var(--iris-1);
+  border-color: var(--accent);
 }
 
 .dropzone.is-dragging {
-  border-color: var(--iris-2);
+  border-color: var(--accent);
   background: var(--panel-raised);
   border-style: solid;
 }
@@ -311,7 +301,7 @@ input[type="password"]:focus {
   width: 100%;
   max-width: 320px;
   height: 8px;
-  accent-color: var(--iris-2);
+  accent-color: var(--accent);
 }
 
 .paste-text form {
@@ -342,7 +332,7 @@ input[type="password"]:focus {
 
 .paste-textarea:focus {
   outline: none;
-  border-color: var(--iris-1);
+  border-color: var(--accent);
 }
 
 .hidden-file-input {
@@ -396,7 +386,7 @@ input[type="password"]:focus {
 
 .settings-tab.active {
   color: var(--paper);
-  border-bottom-color: var(--iris-1);
+  border-bottom-color: var(--accent);
 }
 
 /* workspace: folder sidebar + main content ------------------------------- */
@@ -473,7 +463,7 @@ input[type="password"]:focus {
 }
 
 .folder-tab-new {
-  color: var(--iris-1);
+  color: var(--accent);
 }
 
 .folder-create-form {
@@ -624,7 +614,7 @@ input[type="password"]:focus {
 
 .type-tab.active {
   background: var(--panel-raised);
-  border-color: var(--iris-1);
+  border-color: var(--accent);
   color: var(--paper);
 }
 
@@ -646,7 +636,7 @@ input[type="password"]:focus {
 
 .sort-select:focus,
 .folder-select:focus {
-  border-color: var(--iris-1);
+  border-color: var(--accent);
   outline: none;
 }
 
@@ -758,8 +748,8 @@ input[type="password"]:focus {
 
 .icon-btn.copied,
 .icon-btn-sm.copied {
-  color: var(--iris-2);
-  border-color: var(--iris-2);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .lock-badge {
@@ -773,7 +763,7 @@ input[type="password"]:focus {
   background: rgba(12, 13, 18, 0.85);
   border: 1px solid var(--hairline-bright);
   border-radius: var(--radius-sm);
-  color: var(--iris-2);
+  color: var(--accent);
 }
 
 .lock-badge svg {
@@ -796,8 +786,8 @@ input[type="password"]:focus {
 }
 
 .select-badge.checked {
-  background: var(--iris-2);
-  border-color: var(--iris-2);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .select-badge svg {
@@ -806,7 +796,7 @@ input[type="password"]:focus {
 }
 
 .file-card.selected {
-  border-color: var(--iris-2);
+  border-color: var(--accent);
 }
 
 .expiry-badge {
@@ -1000,7 +990,7 @@ button.tag-chip:hover {
 .embed-toggle input[type="checkbox"] {
   width: 16px;
   height: 16px;
-  accent-color: var(--iris-1);
+  accent-color: var(--accent);
 }
 
 input[type="color"] {
@@ -1310,10 +1300,7 @@ input[type="color"] {
   font-family: var(--font-display);
   font-size: 1.5rem;
   font-weight: 700;
-  background: var(--sheen);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--paper);
   line-height: 1.2;
 }
 
