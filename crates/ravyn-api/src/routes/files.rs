@@ -122,69 +122,70 @@ async fn generate_thumbnail(state: &AppState, id: FileId, bytes: &[u8]) {
     }
 }
 
-/// Accepts a single-part multipart upload. This is what a ShareX custom
-/// uploader config points at, with the API token in the `Authorization`
-/// header.
-pub async fn upload_file(
-    AuthedUser(user): AuthedUser,
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Response {
-    let field = match multipart.next_field().await {
-        Ok(Some(field)) => field,
-        Ok(None) => return StatusCode::BAD_REQUEST.into_response(),
-        Err(err) => {
-            tracing::warn!(%err, "invalid multipart body");
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-    };
-
+/// One field's worth of a multipart upload, saved. Pulled out of
+/// `upload_file` so it can be called once per part — the web UI's dropzone
+/// sends one request with several parts when you drop multiple files at
+/// once, ShareX always sends exactly one.
+async fn save_uploaded_part(
+    state: &AppState,
+    owner_id: ravyn_core::UserId,
+    field: axum::extract::multipart::Field<'_>,
+) -> Result<File, (StatusCode, String)> {
     let original_name = field.file_name().unwrap_or("upload").to_string();
     let content_type = field
         .content_type()
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    let bytes = match field.bytes().await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::warn!(%err, "failed to read upload body");
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-    };
+    let bytes = field
+        .bytes()
+        .await
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
-    match state.db.get_max_storage_bytes(user.id).await {
+    match state.db.get_max_storage_bytes(owner_id).await {
         Ok(Some(max)) => {
-            let used = match state.db.get_storage_usage(user.id).await {
-                Ok(used) => used,
-                Err(err) => {
-                    tracing::error!(%err, "failed to check storage usage");
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                }
-            };
+            let used = state.db.get_storage_usage(owner_id).await.map_err(|err| {
+                tracing::error!(%err, "failed to check storage usage");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage error".to_string(),
+                )
+            })?;
             if used + bytes.len() as i64 > max {
-                return (StatusCode::INSUFFICIENT_STORAGE, "storage limit exceeded")
-                    .into_response();
+                return Err((
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    "storage limit exceeded".to_string(),
+                ));
             }
         }
         Ok(None) => {}
         Err(err) => {
             tracing::error!(%err, "failed to check storage quota");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage error".to_string(),
+            ));
         }
     }
 
     let sha256 = hex::encode(Sha256::digest(&bytes));
-    let storage_key = format!("{}/{}", user.id.0, Uuid::new_v4());
+    let storage_key = format!("{}/{}", owner_id.0, Uuid::new_v4());
 
-    if let Err(err) = state.storage.put(&storage_key, bytes.clone()).await {
-        tracing::error!(%err, "failed to write file to storage");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
+    state
+        .storage
+        .put(&storage_key, bytes.clone())
+        .await
+        .map_err(|err| {
+            tracing::error!(%err, "failed to write file to storage");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage error".to_string(),
+            )
+        })?;
 
     let file = File {
         id: FileId::new(),
-        owner_id: user.id,
+        owner_id,
         original_name,
         storage_key,
         content_type: content_type.clone(),
@@ -195,16 +196,87 @@ pub async fn upload_file(
         created_at: OffsetDateTime::now_utc(),
     };
 
-    if let Err(err) = state.db.insert_file(&file).await {
+    state.db.insert_file(&file).await.map_err(|err| {
         tracing::error!(%err, "failed to record uploaded file");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "database error".to_string(),
+        )
+    })?;
 
     if content_type.starts_with("image/") {
-        generate_thumbnail(&state, file.id, &bytes).await;
+        generate_thumbnail(state, file.id, &bytes).await;
     }
 
-    Json(serde_json::json!({ "id": file.id.0 })).into_response()
+    Ok(file)
+}
+
+#[derive(serde::Serialize)]
+struct UploadOutcome {
+    name: String,
+    id: Option<Uuid>,
+    error: Option<String>,
+}
+
+/// Accepts one or more parts in a single multipart request — the dropzone
+/// sends several when you drop multiple files at once. A single-part
+/// request (what ShareX always sends) keeps the old `{"id": ...}` response
+/// shape so existing ShareX configs (`{json:id}`) keep working unchanged;
+/// with more than one part the response is a `[{"name","id","error"}]`
+/// array instead, since there's no longer one single id to report and a
+/// later file hitting its owner's quota shouldn't lose the ones already
+/// saved before it.
+pub async fn upload_file(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Response {
+    let mut outcomes = Vec::new();
+
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(err) => {
+                tracing::warn!(%err, "invalid multipart body");
+                if outcomes.is_empty() {
+                    return StatusCode::BAD_REQUEST.into_response();
+                }
+                break;
+            }
+        };
+
+        let name = field.file_name().unwrap_or("upload").to_string();
+        match save_uploaded_part(&state, user.id, field).await {
+            Ok(file) => outcomes.push(UploadOutcome {
+                name,
+                id: Some(file.id.0),
+                error: None,
+            }),
+            Err((_, message)) => outcomes.push(UploadOutcome {
+                name,
+                id: None,
+                error: Some(message),
+            }),
+        }
+    }
+
+    if outcomes.is_empty() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    if let [only] = outcomes.as_slice() {
+        return match only.id {
+            Some(id) => Json(serde_json::json!({ "id": id })).into_response(),
+            None => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                only.error.clone().unwrap_or_default(),
+            )
+                .into_response(),
+        };
+    }
+
+    Json(outcomes).into_response()
 }
 
 pub async fn list_files(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {

@@ -26,16 +26,18 @@ pub async fn list_files() -> Result<Vec<FileSummary>, ServerFnError> {
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))?;
 
-    // Thumbnails go through `ravyn-web`'s own `/preview/{id}` proxy rather
-    // than the direct `ravyn-api` URL `into_file_summary` fills in by
-    // default — see `preview_proxy` in `main.rs` for why: a plain `<img>`
-    // pointed straight at `ravyn-api` wouldn't carry the session cookie
-    // your own password-protected files need.
+    // Thumbnails and the file detail modal's inline preview both go
+    // through `ravyn-web`'s own cookie-forwarding proxies rather than the
+    // direct `ravyn-api` URLs `into_file_summary` fills in by default — see
+    // `preview_proxy`/`raw_proxy` in `main.rs` for why: a plain
+    // `<img>`/`<video>` pointed straight at `ravyn-api` wouldn't carry the
+    // session cookie your own password-protected files need.
     Ok(files
         .into_iter()
         .map(ssr::into_file_summary)
         .map(|mut file| {
             file.thumbnail_url = format!("/preview/{}", file.id);
+            file.raw_url = format!("/raw/{}", file.id);
             file
         })
         .collect())

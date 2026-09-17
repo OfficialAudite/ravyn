@@ -4,6 +4,7 @@ mod folders;
 mod view;
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::StatusCode,
     routing::{delete, get, post, put},
     Router,
@@ -51,7 +52,24 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/users/{id}/limit", put(account::set_user_limit))
         .route("/admin/stats", get(account::admin_stats))
         .route("/v/{id}", get(view::view_file))
+        .layer(DefaultBodyLimit::max(max_upload_bytes()))
         .with_state(state)
+}
+
+/// Axum's own default (2 MB, meant for JSON APIs, not file uploads) is
+/// nowhere near enough for this app — `MAX_UPLOAD_MB` overrides it, in
+/// megabytes, on both this server and `ravyn-web` (which needs its own copy
+/// of this same limit, since `/upload` on `ravyn-web` receives the whole
+/// multipart body itself before forwarding it here). The upload path
+/// buffers each part fully in memory before writing it to storage — a very
+/// large default trades away that safety margin, so this stays generous
+/// rather than unbounded.
+fn max_upload_bytes() -> usize {
+    std::env::var("MAX_UPLOAD_MB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(2048)
+        .saturating_mul(1024 * 1024)
 }
 
 async fn health() -> &'static str {

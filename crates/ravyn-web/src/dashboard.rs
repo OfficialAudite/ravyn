@@ -374,17 +374,20 @@ fn Dropzone() -> impl IntoView {
             <form method="post" action="/upload" enctype="multipart/form-data">
                 <RavenIcon class="raven"/>
                 <p class="dropzone-title">"drop files into the hoard"</p>
-                <p class="dropzone-hint">"or click to choose"</p>
+                <p class="dropzone-hint">"or click to choose — multiple at once is fine"</p>
                 <input
                     id="file-input"
                     type="file"
                     name="file"
+                    multiple
                     required
                     on:change=move |_| submit_input_form("file-input")
                 />
-                <button type="submit" class="btn btn-ghost dropzone-submit">
-                    "upload"
-                </button>
+                <noscript>
+                    <button type="submit" class="btn btn-ghost dropzone-submit">
+                        "upload"
+                    </button>
+                </noscript>
             </form>
         </div>
     }

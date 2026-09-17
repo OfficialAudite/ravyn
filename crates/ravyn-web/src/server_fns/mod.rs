@@ -31,14 +31,14 @@ pub struct FileSummary {
     /// anything else, or if generation failed, this 404s and the UI falls
     /// back to a file-type icon.
     pub thumbnail_url: String,
-    /// The original bytes, straight from `ravyn-api`'s `/files/{id}` —
-    /// what the file detail modal plays/displays inline. Unlike
-    /// `thumbnail_url` this is never proxied through `ravyn-web`: images are
-    /// small enough to fetch directly, and proxying video/audio would mean
-    /// buffering the whole file in `ravyn-web`'s memory and losing native
-    /// range-request scrubbing. A password-protected file's own owner will
-    /// hit the password gate here too, same as opening `url` directly does
-    /// today — a pre-existing gap this doesn't attempt to fix.
+    /// The original bytes, straight from `ravyn-api`'s `/files/{id}` — what
+    /// the file detail modal plays/displays inline, downloads, and opens in
+    /// a new tab. Defaults to a direct `ravyn-api` URL (fine for the public
+    /// shared-folder page, which never overrides this); `list_files`
+    /// overrides it to `ravyn-web`'s own `/raw/{id}` proxy, the same
+    /// cookie-forwarding trick `thumbnail_url` already uses, so the owner's
+    /// own password-protected files preview correctly in their own
+    /// dashboard instead of silently failing to load.
     pub raw_url: String,
 }
 

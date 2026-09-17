@@ -39,10 +39,13 @@ Leptos server functions run server-side, forward the session cookie to `ravyn-ap
 hand, and relay any `Set-Cookie` back. See `crates/ravyn-web/src/server_fns/`. File
 uploads from the browser go through a plain HTML form (`POST /upload` on `ravyn-web`,
 which proxies to the API) rather than a server function, so they keep working without
-JS. Thumbnails are proxied too (`GET /preview/{id}` on `ravyn-web`) so your own
-password-protected files still show a preview in your own dashboard — a plain `<img>`
-pointed straight at `ravyn-api` would be a cross-origin request that never carries the
-`ravyn-web` session cookie.
+JS. Thumbnails (`GET /preview/{id}`) and the file detail modal's inline preview/
+download/"open original" (`GET /raw/{id}`) are proxied the same way, on `ravyn-web`,
+so your own password-protected files still show a preview in your own dashboard — a
+plain `<img>`/`<video>` pointed straight at `ravyn-api` would be a cross-origin
+request that never carries the `ravyn-web` session cookie. `/raw/{id}` streams the
+response through rather than buffering it like the (small, AVIF) thumbnails, since an
+original file can be arbitrarily large.
 
 ## Storage backends
 
@@ -64,6 +67,22 @@ Leave `STORAGE_BACKEND` unset (or anything but `s3`) to store on local disk unde
 multipart API (`crates/ravyn-storage/src/lib.rs`) rather than a single PUT — every S3
 provider has its own limit on a single request's size, and multipart avoids all of
 them uniformly, for files of any size.
+
+That's the S3-side chunking; separately, both `ravyn-api` and `ravyn-web` cap the
+size of an incoming upload request itself (Axum's own default is 2 MB, nowhere near
+enough for real files) — `MAX_UPLOAD_MB` overrides it on both, in megabytes, and
+needs to be set the same on both since `ravyn-web`'s `/upload` receives the whole
+request itself before proxying it on to `ravyn-api`. Each part of a multipart upload
+is still buffered fully in memory before being written to storage, so this is a
+generous default (2048 MB), not an unbounded one.
+
+Dropping (or selecting) more than one file at once at `/upload` sends them all as
+separate parts of the same request — `POST /files` accepts one or many parts. A
+single-part request (what ShareX always sends) gets the original `{"id": ...}`
+response so existing ShareX configs (`{json:id}`) don't break; more than one part
+gets a `[{"name","id","error"}]` array instead, one entry per file, since a later
+file hitting the owner's storage quota shouldn't discard the ones already saved
+before it.
 
 Thumbnails (see below) are always local disk, under `THUMBNAIL_ROOT`, regardless of
 where the original files live — they're small, read on every gallery view, and there's
