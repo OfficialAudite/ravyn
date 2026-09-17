@@ -233,6 +233,23 @@ join against `users`, so the log stays readable even for an account since rename
 or deleted. No filtering or pagination, just the most recent 200 entries in one
 list, which is plenty at self-hosted scale.
 
+### Rate limiting
+
+A handful of endpoints are protected against brute-forcing and casual abuse with a
+simple in-memory, fixed-window limiter, keyed by the requester's IP (from
+`X-Forwarded-For`, since this app is meant to run behind a reverse proxy) or, for
+uploads, by the authenticated user:
+
+- `POST /login`: 10 attempts per 5 minutes per IP.
+- `POST /login/totp`: 10 attempts per 5 minutes per IP. This one matters more than
+  the password check, since a 6-digit TOTP code only has a million possibilities.
+- `POST /register`: 5 attempts per hour per IP.
+- `POST /files` (upload): 60 requests per minute per user.
+
+A rejected request gets `429 Too Many Requests`. This isn't distributed and doesn't
+persist across a restart; it's meant to blunt casual brute-forcing on a self-hosted
+instance, not stand up to a determined, multi-IP attacker.
+
 ### File naming
 
 By default a freshly uploaded file keeps whatever name the uploading client sent —

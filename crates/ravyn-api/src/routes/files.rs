@@ -510,6 +510,10 @@ pub async fn upload_file(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
+    if !state.rate_limiters.upload.check(&user.id.0.to_string()) {
+        return (StatusCode::TOO_MANY_REQUESTS, "too many uploads, slow down").into_response();
+    }
+
     let base_url = resolve_public_base_url(&state, &headers);
     let mut outcomes = Vec::new();
 

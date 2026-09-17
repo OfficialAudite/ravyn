@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::{AuthedUser, PENDING_LOGIN_LIFETIME, SESSION_COOKIE, SESSION_LIFETIME},
+    rate_limit::client_ip,
     state::AppState,
 };
 
@@ -33,7 +34,19 @@ pub struct LoginRequest {
 /// `POST /login/totp` with a code. The response shape tells the two apart:
 /// `{"totp_required": true, "login_token": ...}` versus a plain session
 /// cookie.
-pub async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) -> Response {
+pub async fn login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<LoginRequest>,
+) -> Response {
+    if !state.rate_limiters.login.check(&client_ip(&headers)) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many login attempts, try again later",
+        )
+            .into_response();
+    }
+
     let user = match state.db.get_user_by_username(&body.username).await {
         Ok(Some(user)) => user,
         Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
@@ -87,8 +100,17 @@ pub struct TotpLoginRequest {
 /// invite code.
 pub async fn login_totp(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<TotpLoginRequest>,
 ) -> Response {
+    if !state.rate_limiters.totp.check(&client_ip(&headers)) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many attempts, try again later",
+        )
+            .into_response();
+    }
+
     let token_hash = core_auth::hash_token(&body.login_token);
     let pending = match state.db.get_pending_login(&token_hash).await {
         Ok(Some(pending)) => pending,
@@ -181,8 +203,17 @@ pub struct RegisterRequest {
 /// call rather than cached anywhere.
 pub async fn register(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<RegisterRequest>,
 ) -> Response {
+    if !state.rate_limiters.register.check(&client_ip(&headers)) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many registration attempts, try again later",
+        )
+            .into_response();
+    }
+
     if body.username.trim().is_empty() || body.password.is_empty() {
         return (
             StatusCode::BAD_REQUEST,

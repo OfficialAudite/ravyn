@@ -14,13 +14,22 @@ pub enum LoginResult {
 pub async fn login(username: String, password: String) -> Result<LoginResult, ServerFnError> {
     use crate::server_fns::ssr;
 
-    let response = reqwest::Client::new()
+    let mut request = reqwest::Client::new()
         .post(format!("{}/login", ssr::api_base_url()))
-        .json(&serde_json::json!({ "username": username, "password": password }))
+        .json(&serde_json::json!({ "username": username, "password": password }));
+    if let Some(ip) = ssr::incoming_client_ip().await {
+        request = request.header("X-Forwarded-For", ip);
+    }
+    let response = request
         .send()
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))?;
 
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(ServerFnError::new(
+            "too many login attempts, try again in a few minutes",
+        ));
+    }
     if !response.status().is_success() {
         return Err(ServerFnError::new("wrong username or password"));
     }
@@ -49,13 +58,22 @@ pub async fn login(username: String, password: String) -> Result<LoginResult, Se
 pub async fn login_totp(login_token: String, code: String) -> Result<(), ServerFnError> {
     use crate::server_fns::ssr;
 
-    let response = reqwest::Client::new()
+    let mut request = reqwest::Client::new()
         .post(format!("{}/login/totp", ssr::api_base_url()))
-        .json(&serde_json::json!({ "login_token": login_token, "code": code }))
+        .json(&serde_json::json!({ "login_token": login_token, "code": code }));
+    if let Some(ip) = ssr::incoming_client_ip().await {
+        request = request.header("X-Forwarded-For", ip);
+    }
+    let response = request
         .send()
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))?;
 
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(ServerFnError::new(
+            "too many attempts, try again in a few minutes",
+        ));
+    }
     if !response.status().is_success() {
         return Err(ServerFnError::new("invalid code"));
     }
@@ -114,13 +132,17 @@ pub async fn register(
 ) -> Result<(), ServerFnError> {
     use crate::server_fns::ssr;
 
-    let response = reqwest::Client::new()
+    let mut request = reqwest::Client::new()
         .post(format!("{}/register", ssr::api_base_url()))
         .json(&serde_json::json!({
             "username": username,
             "password": password,
             "invite_token": invite_token,
-        }))
+        }));
+    if let Some(ip) = ssr::incoming_client_ip().await {
+        request = request.header("X-Forwarded-For", ip);
+    }
+    let response = request
         .send()
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))?;

@@ -85,6 +85,34 @@ pub(crate) mod ssr {
             .map(str::to_string)
     }
 
+    /// The browser's own address, so `ravyn-api`'s rate limiting (keyed by
+    /// `X-Forwarded-For`) can tell separate visitors apart instead of
+    /// bucketing every login through `ravyn-web` under one shared "unknown"
+    /// entry — see `ravyn-api::rate_limit::client_ip`, which this mirrors.
+    /// `None` when neither header is present (e.g. a bare local dev setup
+    /// with no reverse proxy in front of `ravyn-web` either).
+    pub async fn incoming_client_ip() -> Option<String> {
+        let headers: HeaderMap = leptos_axum::extract().await.ok()?;
+
+        if let Some(forwarded) = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+        {
+            if let Some(first) = forwarded.split(',').next() {
+                let trimmed = first.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+
+        headers
+            .get("x-real-ip")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
     /// Copies a `Set-Cookie` header from an `ravyn-api` response onto the
     /// response `ravyn-web` sends back to the browser.
     pub fn relay_set_cookie(response: &reqwest::Response) {

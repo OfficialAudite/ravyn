@@ -1,9 +1,12 @@
 mod auth;
+mod rate_limit;
 mod routes;
 mod state;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
+use rate_limit::RateLimiters;
 use ravyn_core::{auth as core_auth, User, UserId};
 use ravyn_db::Db;
 use ravyn_storage::{Storage, StorageConfig};
@@ -50,10 +53,14 @@ async fn main() {
             .build()
             .expect("failed to build http client"),
         public_url: std::env::var("RAVYN_PUBLIC_API_URL").ok(),
+        rate_limiters: Arc::new(RateLimiters::default()),
     };
 
     tokio::spawn(routes::run_expiry_sweep(state.clone()));
     tokio::spawn(routes::run_chunked_upload_sweep(state.clone()));
+    tokio::spawn(rate_limit::run_rate_limit_cleanup(
+        state.rate_limiters.clone(),
+    ));
 
     let app = routes::router(state);
 

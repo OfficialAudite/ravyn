@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use ravyn_db::Db;
 use ravyn_storage::Storage;
+
+use crate::rate_limit::RateLimiters;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,4 +22,5 @@ pub struct AppState {
     /// `RAVYN_PUBLIC_API_URL`, if set — see `routes::resolve_public_base_url`
     /// for why a request's own headers aren't always enough to know this.
     pub public_url: Option<String>,
+    pub rate_limiters: Arc<RateLimiters>,
 }
