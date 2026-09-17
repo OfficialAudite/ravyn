@@ -11,4 +11,11 @@ pub struct AppState {
     /// small and read constantly (every gallery view), so there's no reason
     /// to round-trip them through S3.
     pub thumbnails: Storage,
+    /// Reused across requests — `reqwest::Client` is `Arc`-backed internally,
+    /// so cloning it is cheap and keeps connection pooling working. Used
+    /// only for firing upload webhook notifications.
+    pub http: reqwest::Client,
+    /// `RAVYN_PUBLIC_API_URL`, if set — see `routes::resolve_public_base_url`
+    /// for why a request's own headers aren't always enough to know this.
+    pub public_url: Option<String>,
 }

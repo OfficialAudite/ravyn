@@ -992,6 +992,52 @@ pub async fn set_embed_settings(
     StatusCode::NO_CONTENT.into_response()
 }
 
+pub async fn get_webhook_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+) -> Response {
+    match state.db.get_webhook_url(user.id).await {
+        Ok(webhook_url) => Json(serde_json::json!({ "webhook_url": webhook_url })).into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to load webhook url");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SetWebhookSettingsRequest {
+    webhook_url: Option<String>,
+}
+
+/// Posts a message to this URL every time this user uploads a file — see
+/// `routes::files::notify_upload_webhook`. Deliberately no test-ping here:
+/// saving already validates the shape (must look like a URL), and the next
+/// real upload proves the rest.
+pub async fn set_webhook_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Json(body): Json<SetWebhookSettingsRequest>,
+) -> Response {
+    let webhook_url = body.webhook_url.filter(|url| !url.trim().is_empty());
+    if let Some(url) = &webhook_url {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return (
+                StatusCode::BAD_REQUEST,
+                "webhook url must start with http:// or https://",
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(err) = state.db.set_webhook_url(user.id, webhook_url).await {
+        tracing::error!(%err, "failed to save webhook url");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// Read-only: which storage backend is currently configured, for display in
 /// the settings page. Never exposes credentials. Actually changing backends
 /// still means editing environment variables and restarting — that config

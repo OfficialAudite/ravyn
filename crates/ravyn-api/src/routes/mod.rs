@@ -7,7 +7,7 @@ pub use files::run_expiry_sweep;
 
 use axum::{
     extract::DefaultBodyLimit,
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     routing::{delete, get, post, put},
     Router,
 };
@@ -53,6 +53,8 @@ pub fn router(state: AppState) -> Router {
         .route("/storage-info", get(account::storage_info))
         .route("/embed-settings", get(account::get_embed_settings))
         .route("/embed-settings", put(account::set_embed_settings))
+        .route("/webhook-settings", get(account::get_webhook_settings))
+        .route("/webhook-settings", put(account::set_webhook_settings))
         .route("/instance-settings", get(account::get_instance_settings))
         .route("/instance-settings", put(account::set_instance_settings))
         .route("/invites", post(account::create_invite))
@@ -146,6 +148,41 @@ pub fn hash_optional_password(password: Option<String>) -> Result<Option<String>
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
         None => Ok(None),
     }
+}
+
+/// The origin this instance is reachable at, purely as far as *this
+/// request's own headers* say — accurate when the browser hit `ravyn-api`
+/// directly (a `/v/{id}` link, ShareX), but not when this request actually
+/// arrived via `ravyn-web`'s `/upload` proxy: that hop's own outgoing
+/// request carries `ravyn-web`'s address, not the browser's. Use
+/// `resolve_public_base_url` instead unless you specifically know this
+/// request was never proxied.
+fn public_base_url(headers: &HeaderMap) -> String {
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("http");
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("localhost");
+    format!("{proto}://{host}")
+}
+
+/// The origin to use for a link that gets embedded somewhere else (an OG
+/// tag, a webhook message) rather than just followed by whoever's already
+/// here. Prefers `RAVYN_PUBLIC_API_URL` (set once, by the operator — see
+/// `docker-compose.yml`) over anything derived from this request's own
+/// headers, since a request proxied through `ravyn-web`'s `/upload` has no
+/// reliable way to know the browser's real address (see
+/// `public_base_url`'s doc comment). Falls back to header-derived only when
+/// that env var isn't set, which is still correct for the common
+/// direct-to-`ravyn-api` case.
+pub fn resolve_public_base_url(state: &AppState, headers: &HeaderMap) -> String {
+    state
+        .public_url
+        .clone()
+        .unwrap_or_else(|| public_base_url(headers))
 }
 
 /// A minimal, self-contained password prompt for a directly-shared link.

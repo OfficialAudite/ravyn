@@ -273,6 +273,21 @@ fallback. This applies to any text file, not just ones created via paste. The te
 is HTML-escaped before being embedded in the page, since it's arbitrary
 user-supplied content.
 
+### Upload webhooks
+
+Per-user, off by default (`/settings` → embeds tab, `users.webhook_url`). Every
+successful upload posts a notification — filename and view link — to the configured
+URL, spawned off the request rather than awaited so a slow or unreachable target
+never delays the upload response itself (10s timeout on the client either way, so a
+hanging target can't leak tasks forever). The payload sets both `content` (what
+Discord's webhook API reads) and `text` (what Slack's reads) to the same message, so
+one request works for either without asking which service this is.
+
+The URL is whatever the account owner types in — same trust boundary as any other
+per-user setting (a naming scheme, an embed template): they can only ever point this
+at wherever *they* choose to send *their own* notifications, the same as configuring
+an outgoing webhook in any other self-hosted tool.
+
 ## Embeds (Discord, Slack, Twitter)
 
 Every share link already works as a direct image/video link — paste one in Discord
@@ -363,10 +378,18 @@ Then either visit `/register` in a browser to create the first (admin) account, 
 run `docker compose run --rm api create-user alice hunter2` for a headless setup.
 
 Serves the API on `:3000` and the web UI on `:3001`. See `docker-compose.yml` for the
-Postgres, storage-volume, and `RAVYN_PUBLIC_API_URL` wiring — that last one matters
-specifically inside Docker: `ravyn-web` reaches `ravyn-api` over the compose network as
-`http://api:3000`, but the *browser* needs the host-mapped `http://localhost:3000`
-instead for thumbnails and download links, since it can't resolve the `api` hostname.
+Postgres, storage-volume, and `RAVYN_PUBLIC_API_URL` wiring — that one matters on
+*both* services, for two different reasons: `ravyn-web` reaches `ravyn-api` over the
+compose network as `http://api:3000`, but the *browser* needs the host-mapped
+`http://localhost:3000` instead for thumbnails and download links, since it can't
+resolve the `api` hostname; `ravyn-api` needs its own copy for any link it builds
+itself from a request that came in through `ravyn-web`'s `/upload` proxy (a webhook
+notification, currently) — that request's own headers carry `ravyn-web`'s address,
+not the browser's, so there's no way to recover the real public URL from them.
+**Deploying behind a real domain**: set both to that domain (`https://your.domain`,
+not `localhost`) — this is the single most common misconfiguration after a first
+deploy (copied links or webhook notifications pointing at `localhost` instead of the
+real, working URL).
 
 ## Extending it
 

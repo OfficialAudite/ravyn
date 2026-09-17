@@ -41,6 +41,15 @@ async fn main() {
         db,
         storage,
         thumbnails,
+        // A timeout matters here specifically because the client posts to
+        // a URL the account owner supplied (a webhook endpoint) — without
+        // one, a target that never responds would leak a spawned task per
+        // upload indefinitely.
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build http client"),
+        public_url: std::env::var("RAVYN_PUBLIC_API_URL").ok(),
     };
 
     tokio::spawn(routes::run_expiry_sweep(state.clone()));

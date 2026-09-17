@@ -3,9 +3,9 @@ use leptos::prelude::*;
 use crate::format::{format_date, format_size, format_type_breakdown};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_embed_settings, get_my_stats, get_storage_info, list_api_tokens, me, ApiTokenInfo,
-    ChangePassword, ConfirmTotp, CreateApiToken, DeleteApiToken, DisableTotp, EmbedSettings,
-    SetEmbedSettings, SetupTotp, TotpSetup,
+    get_embed_settings, get_my_stats, get_storage_info, get_webhook_url, list_api_tokens, me,
+    ApiTokenInfo, ChangePassword, ConfirmTotp, CreateApiToken, DeleteApiToken, DisableTotp,
+    EmbedSettings, SetEmbedSettings, SetWebhookUrl, SetupTotp, TotpSetup,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -63,7 +63,13 @@ pub fn SettingsPage() -> impl IntoView {
                     .into_any()
             }
             SettingsTab::ApiTokens => view! { <ApiTokensSection/> }.into_any(),
-            SettingsTab::Embeds => view! { <EmbedSection/> }.into_any(),
+            SettingsTab::Embeds => {
+                view! {
+                    <EmbedSection/>
+                    <WebhookSection/>
+                }
+                    .into_any()
+            }
             SettingsTab::Storage => view! { <StorageSection/> }.into_any(),
         }}
     }
@@ -238,6 +244,81 @@ fn EmbedForm(
                 "available in title/description/site name: {file.name}, {file.size}, {file.type}, {user.username}"
             </p>
 
+            <button type="submit" class="btn btn-primary">
+                "save"
+            </button>
+            {move || {
+                save_action
+                    .value()
+                    .get()
+                    .map(|result| match result {
+                        Ok(_) => view! { <p class="settings-hint">"saved."</p> }.into_any(),
+                        Err(err) => view! { <p class="form-error">{err.to_string()}</p> }.into_any(),
+                    })
+            }}
+        </form>
+    }
+}
+
+#[component]
+fn WebhookSection() -> impl IntoView {
+    let save_action = ServerAction::<SetWebhookUrl>::new();
+    let current = Resource::new(move || save_action.version().get(), |_| get_webhook_url());
+
+    view! {
+        <div class="settings-section">
+            <h3>"upload webhook"</h3>
+            <p class="settings-hint">
+                "post a notification to a Discord or Slack incoming webhook URL every time you "
+                "upload a file. leave blank to turn this off."
+            </p>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    current
+                        .get()
+                        .map(|result| match result {
+                            Ok(webhook_url) => view! { <WebhookForm webhook_url save_action /> }
+                                .into_any(),
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load webhook settings"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn WebhookForm(
+    webhook_url: Option<String>,
+    save_action: ServerAction<SetWebhookUrl>,
+) -> impl IntoView {
+    let (url, set_url) = signal(webhook_url.unwrap_or_default());
+
+    view! {
+        <form
+            class="embed-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                let value = url.get();
+                save_action
+                    .dispatch(SetWebhookUrl {
+                        webhook_url: (!value.trim().is_empty()).then_some(value),
+                    });
+            }
+        >
+            <div class="field">
+                <label for="webhook-url">"webhook url"</label>
+                <input
+                    id="webhook-url"
+                    type="text"
+                    placeholder="https://discord.com/api/webhooks/..."
+                    prop:value=move || url.get()
+                    on:input=move |ev| set_url.set(event_target_value(&ev))
+                />
+            </div>
             <button type="submit" class="btn btn-primary">
                 "save"
             </button>

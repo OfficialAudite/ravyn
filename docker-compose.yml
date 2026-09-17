@@ -21,6 +21,13 @@ services:
       STORAGE_ROOT: /data
       THUMBNAIL_ROOT: /data/thumbnails
       LISTEN_ADDR: 0.0.0.0:3000
+      # Used to build links that get embedded somewhere else rather than
+      # just followed by whoever's already here — a webhook notification,
+      # currently. Requests proxied through `ravyn-web` (browser uploads)
+      # otherwise have no reliable way to know this: the request `ravyn-api`
+      # actually sees carries `ravyn-web`'s own internal address, not the
+      # domain the browser used.
+      RAVYN_PUBLIC_API_URL: http://localhost:3000
     ports:
       - "3000:3000"
     volumes:

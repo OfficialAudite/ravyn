@@ -131,6 +131,30 @@ impl Db {
         Ok(())
     }
 
+    pub async fn get_webhook_url(&self, user_id: UserId) -> Result<Option<String>, DbError> {
+        let value: Option<String> =
+            sqlx::query_scalar("select webhook_url from users where id = $1")
+                .bind(user_id.0)
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(value)
+    }
+
+    pub async fn set_webhook_url(
+        &self,
+        user_id: UserId,
+        webhook_url: Option<String>,
+    ) -> Result<(), DbError> {
+        sqlx::query("update users set webhook_url = $2 where id = $1")
+            .bind(user_id.0)
+            .bind(webhook_url)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn set_password_hash(
         &self,
         user_id: UserId,

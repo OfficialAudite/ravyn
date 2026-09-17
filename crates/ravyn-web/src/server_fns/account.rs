@@ -470,6 +470,65 @@ pub async fn set_embed_settings(settings: EmbedSettings) -> Result<(), ServerFnE
     Ok(())
 }
 
+#[server]
+pub async fn get_webhook_url() -> Result<Option<String>, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/webhook-settings", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("not authenticated"));
+    }
+
+    #[derive(Deserialize)]
+    struct WebhookSettings {
+        webhook_url: Option<String>,
+    }
+
+    let body: WebhookSettings = response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+    Ok(body.webhook_url)
+}
+
+#[server]
+pub async fn set_webhook_url(webhook_url: Option<String>) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .put(format!("{}/webhook-settings", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .json(&serde_json::json!({ "webhook_url": webhook_url }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        let message = response.text().await.unwrap_or_default();
+        return Err(ServerFnError::new(if message.is_empty() {
+            "failed to save webhook url".to_string()
+        } else {
+            message
+        }));
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageInfo {
     pub backend: String,

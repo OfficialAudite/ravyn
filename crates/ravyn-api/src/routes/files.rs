@@ -1,16 +1,19 @@
 use axum::{
     extract::{Multipart, Path, Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     Json,
 };
-use ravyn_core::{File, FileId, FolderId};
+use ravyn_core::{File, FileId, FolderId, UserId};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{hash_optional_password, is_authorized, password_prompt_html, FileSummary};
+use super::{
+    hash_optional_password, is_authorized, password_prompt_html, resolve_public_base_url,
+    FileSummary,
+};
 use crate::{auth::AuthedUser, state::AppState};
 
 #[derive(Deserialize)]
@@ -423,6 +426,41 @@ async fn save_streamed_part(
     Ok(file)
 }
 
+/// Posts a Discord/Slack-compatible notification for a freshly uploaded
+/// file, if its owner has a webhook URL configured (`/settings`, per-user —
+/// see `set_webhook_url`). Best-effort, same as `generate_thumbnail`: a
+/// missing or unreachable webhook is logged, never surfaced to the
+/// uploader. Sends both `content` (what Discord's webhook API reads) and
+/// `text` (what Slack's reads) with the same message, so one payload works
+/// for either without the user having to say which service this is.
+///
+/// The URL is whatever the account owner typed in — same trust boundary as
+/// any other per-user setting in `ravyn` (a naming scheme, an embed
+/// template): the owner can only ever point this at wherever *they* choose
+/// to send *their own* upload notifications, the same as configuring an
+/// outgoing webhook in any other self-hosted tool.
+async fn notify_upload_webhook(state: &AppState, owner_id: UserId, file: &File, base_url: &str) {
+    let webhook_url = match state.db.get_webhook_url(owner_id).await {
+        Ok(Some(url)) => url,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(%err, "failed to load webhook url");
+            return;
+        }
+    };
+
+    let view_url = format!("{base_url}/v/{}", file.id.0);
+    let message = format!(
+        "📎 **{}** was just uploaded — {view_url}",
+        file.original_name
+    );
+    let body = serde_json::json!({ "content": message, "text": message });
+
+    if let Err(err) = state.http.post(&webhook_url).json(&body).send().await {
+        tracing::warn!(%err, "failed to notify upload webhook");
+    }
+}
+
 struct UploadOutcome {
     name: String,
     result: Result<Uuid, (StatusCode, String)>,
@@ -464,8 +502,10 @@ impl From<&UploadOutcome> for UploadOutcomeJson {
 pub async fn upload_file(
     AuthedUser(user): AuthedUser,
     State(state): State<AppState>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
+    let base_url = resolve_public_base_url(&state, &headers);
     let mut outcomes = Vec::new();
 
     loop {
@@ -482,9 +522,20 @@ pub async fn upload_file(
         };
 
         let name = field.file_name().unwrap_or("upload").to_string();
-        let result = save_uploaded_part(&state, user.id, field)
-            .await
-            .map(|file| file.id.0);
+        let saved = save_uploaded_part(&state, user.id, field).await;
+        if let Ok(file) = &saved {
+            // Spawned rather than awaited: a slow or unreachable webhook
+            // target must never delay the upload response the way it
+            // would if this sat in the same request/response cycle.
+            let state = state.clone();
+            let owner_id = user.id;
+            let file = file.clone();
+            let base_url = base_url.clone();
+            tokio::spawn(async move {
+                notify_upload_webhook(&state, owner_id, &file, &base_url).await;
+            });
+        }
+        let result = saved.map(|file| file.id.0);
         outcomes.push(UploadOutcome { name, result });
     }
 

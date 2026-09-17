@@ -1,13 +1,13 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
 };
 use ravyn_core::{EmbedSettings, File, FileId};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::{is_authorized, password_prompt_html};
+use super::{is_authorized, password_prompt_html, resolve_public_base_url};
 use crate::{auth::AuthedUser, state::AppState};
 
 #[derive(Deserialize)]
@@ -63,7 +63,8 @@ pub async fn view_file(
     // setting, since this is about making text legible, not social-preview
     // metadata.
     if is_text_content(&file.content_type) {
-        return render_text_view(&state, &file, &public_base_url(&headers)).await;
+        let base = resolve_public_base_url(&state, &headers);
+        return render_text_view(&state, &file, &base).await;
     }
 
     let embed = match state.db.get_embed_settings(file.owner_id).await {
@@ -83,20 +84,8 @@ pub async fn view_file(
         _ => "someone".to_string(),
     };
 
-    let base = public_base_url(&headers);
+    let base = resolve_public_base_url(&state, &headers);
     Html(render_view_html(&file, &embed, &owner_username, &base)).into_response()
-}
-
-fn public_base_url(headers: &HeaderMap) -> String {
-    let proto = headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("http");
-    let host = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("localhost");
-    format!("{proto}://{host}")
 }
 
 fn is_text_content(content_type: &str) -> bool {
