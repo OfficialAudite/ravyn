@@ -288,6 +288,17 @@ per-user setting (a naming scheme, an embed template): they can only ever point 
 at wherever *they* choose to send *their own* notifications, the same as configuring
 an outgoing webhook in any other self-hosted tool.
 
+### URL shortener
+
+`/upload`'s third tab, alongside files and paste text. Deliberately minimal — a
+slug, a destination, a click counter, nothing else (no password, no expiry, no tags:
+the file side already covers those needs for anything actually hosted here).
+`POST /short-urls` picks a random 7-character slug (`ravyn_core::auth::generate_slug`)
+and retries on the rare collision against the database's own uniqueness constraint
+rather than checking first; `GET /s/{slug}` is the public redirect, incrementing the
+click count best-effort on the way through. Each user only ever sees and manages
+their own links (`/short-urls`, list + delete).
+
 ## Embeds (Discord, Slack, Twitter)
 
 Every share link already works as a direct image/video link — paste one in Discord

@@ -6,6 +6,7 @@ mod invites;
 mod pending_logins;
 mod sessions;
 mod settings;
+mod short_urls;
 mod users;
 
 pub use error::DbError;

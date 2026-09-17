@@ -1,6 +1,7 @@
 mod account;
 mod files;
 mod folders;
+mod shorten;
 mod view;
 
 pub use files::run_expiry_sweep;
@@ -64,6 +65,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/users/{id}/limit", put(account::set_user_limit))
         .route("/admin/stats", get(account::admin_stats))
         .route("/v/{id}", get(view::view_file))
+        .route("/short-urls", post(shorten::create_short_url))
+        .route("/short-urls", get(shorten::list_short_urls))
+        .route("/short-urls/{id}", delete(shorten::delete_short_url))
+        .route("/s/{slug}", get(shorten::redirect_short_url))
         .layer(DefaultBodyLimit::max(max_upload_bytes()))
         .with_state(state)
 }

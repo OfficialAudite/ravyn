@@ -106,3 +106,15 @@ pub fn generate_recovery_codes(count: usize) -> Vec<String> {
         })
         .collect()
 }
+
+/// A random slug for a shortened URL — lowercase alphanumeric, no
+/// ambiguous characters, so it reads back cleanly if someone has to type
+/// it. Collisions are handled by the caller retrying with a fresh one
+/// against the database's own uniqueness constraint, not by checking here.
+pub fn generate_slug(length: usize) -> String {
+    const CHARSET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let mut rng = rand::thread_rng();
+    (0..length)
+        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .collect()
+}

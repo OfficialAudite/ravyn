@@ -716,7 +716,8 @@ input[type="password"]:focus {
   height: 15px;
 }
 
-.icon-btn.copied {
+.icon-btn.copied,
+.icon-btn-sm.copied {
   color: var(--iris-2);
   border-color: var(--iris-2);
 }

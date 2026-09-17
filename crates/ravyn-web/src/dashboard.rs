@@ -10,9 +10,10 @@ use crate::icons::{
     FolderIcon, LockIcon, PencilIcon, PlusIcon, RavenIcon, SearchIcon, TagIcon, TrashIcon,
 };
 use crate::server_fns::{
-    get_registration_status, list_files, list_folders, me, AccountInfo, CreateFolder, DeleteFile,
-    DeleteFolder, FileSummary, FolderSummary, Login, LoginResult, LoginTotp, Logout,
-    MoveFileToFolder, RenameFile, SetFileExpiry, SetFilePassword, SetFileTags, SetFolderPassword,
+    get_registration_status, list_files, list_folders, list_short_urls, me, AccountInfo,
+    CreateFolder, CreateShortUrl, DeleteFile, DeleteFolder, DeleteShortUrl, FileSummary,
+    FolderSummary, Login, LoginResult, LoginTotp, Logout, MoveFileToFolder, RenameFile,
+    SetFileExpiry, SetFilePassword, SetFileTags, SetFolderPassword, ShortUrlInfo,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -433,6 +434,7 @@ fn LoginForm(
 enum UploadMode {
     Files,
     Paste,
+    Shorten,
 }
 
 #[component]
@@ -458,10 +460,18 @@ pub fn UploadPage() -> impl IntoView {
             >
                 "paste text"
             </button>
+            <button
+                class="settings-tab"
+                class:active=move || mode.get() == UploadMode::Shorten
+                on:click=move |_| mode.set(UploadMode::Shorten)
+            >
+                "shorten url"
+            </button>
         </div>
         {move || match mode.get() {
             UploadMode::Files => view! { <Dropzone/> }.into_any(),
             UploadMode::Paste => view! { <PasteText/> }.into_any(),
+            UploadMode::Shorten => view! { <ShortenUrl/> }.into_any(),
         }}
     }
 }
@@ -553,6 +563,142 @@ fn PasteText() -> impl IntoView {
                 </button>
             </form>
         </div>
+    }
+}
+
+/// Same "create, then a list of your own below it" shape as
+/// `FolderSidebar`'s create-a-folder form, just without needing a modal or
+/// a separate page — a shortened link has nothing else to configure.
+#[component]
+fn ShortenUrl() -> impl IntoView {
+    let create_action = ServerAction::<CreateShortUrl>::new();
+    let delete_action = ServerAction::<DeleteShortUrl>::new();
+    let (destination, set_destination) = signal(String::new());
+
+    let short_urls = Resource::new(
+        move || (create_action.version().get(), delete_action.version().get()),
+        |_| list_short_urls(),
+    );
+
+    view! {
+        <div class="paste-text">
+            <form
+                class="embed-form"
+                on:submit=move |ev| {
+                    ev.prevent_default();
+                    let url = destination.get();
+                    if !url.trim().is_empty() {
+                        create_action.dispatch(CreateShortUrl { destination: url });
+                        set_destination.set(String::new());
+                    }
+                }
+            >
+                <div class="field">
+                    <label for="shorten-destination">"url to shorten"</label>
+                    <input
+                        id="shorten-destination"
+                        type="text"
+                        placeholder="https://example.com/a/very/long/path"
+                        prop:value=move || destination.get()
+                        on:input=move |ev| set_destination.set(event_target_value(&ev))
+                    />
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    "shorten"
+                </button>
+                {move || {
+                    create_action
+                        .value()
+                        .get()
+                        .map(|result| match result {
+                            Ok(created) => {
+                                view! { <p class="token-result">{created.short_url}</p> }.into_any()
+                            }
+                            Err(err) => view! { <p class="form-error">{err.to_string()}</p> }.into_any(),
+                        })
+                }}
+            </form>
+
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    short_urls
+                        .get()
+                        .map(|result| match result {
+                            Ok(urls) if urls.is_empty() => {
+                                view! { <p class="settings-hint">"no shortened links yet."</p> }
+                                    .into_any()
+                            }
+                            Ok(urls) => {
+                                view! {
+                                    <ul class="token-list">
+                                        {urls
+                                            .into_iter()
+                                            .map(|info| view! { <ShortUrlRow info delete_action /> })
+                                            .collect_view()}
+                                    </ul>
+                                }
+                                    .into_any()
+                            }
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load short links"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn ShortUrlRow(info: ShortUrlInfo, delete_action: ServerAction<DeleteShortUrl>) -> impl IntoView {
+    let id = info.id.clone();
+    let copy_url = info.short_url.clone();
+    let (copied, set_copied) = signal(false);
+
+    let copy = move |_| {
+        copy_to_clipboard(&copy_url);
+        set_copied.set(true);
+        set_timeout(
+            move || set_copied.set(false),
+            std::time::Duration::from_millis(1500),
+        );
+    };
+
+    view! {
+        <li class="token-row">
+            <div>
+                <p class="token-name">{info.short_url.clone()}</p>
+                <p class="file-sub">
+                    {info.destination.clone()} " · " {info.clicks} " clicks"
+                </p>
+            </div>
+            <div class="user-row-actions">
+                <button
+                    class="icon-btn-sm"
+                    class:copied=move || copied.get()
+                    title="copy link"
+                    on:click=copy
+                >
+                    {move || {
+                        if copied.get() {
+                            view! { <CheckIcon/> }.into_any()
+                        } else {
+                            view! { <CopyIcon/> }.into_any()
+                        }
+                    }}
+                </button>
+                <button
+                    class="icon-btn-sm"
+                    title="delete"
+                    on:click=move |_| {
+                        delete_action.dispatch(DeleteShortUrl { id: id.clone() });
+                    }
+                >
+                    <TrashIcon/>
+                </button>
+            </div>
+        </li>
     }
 }
 

@@ -11,6 +11,7 @@ mod naming;
 mod pending_login;
 mod registration;
 mod session;
+mod short_url;
 mod user;
 
 pub use api_token::{ApiToken, ApiTokenId, ApiTokenValue};
@@ -24,4 +25,5 @@ pub use naming::NamingScheme;
 pub use pending_login::PendingLogin;
 pub use registration::RegistrationMode;
 pub use session::{Session, SessionToken};
+pub use short_url::{ShortUrl, ShortUrlId};
 pub use user::{User, UserId};
