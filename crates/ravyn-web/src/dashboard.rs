@@ -586,9 +586,22 @@ fn FolderSidebar(
                                 placeholder="password (optional)"
                                 on:input=move |ev| set_new_password.set(event_target_value(&ev))
                             />
-                            <button type="submit" class="btn btn-primary btn-block">
-                                "create"
-                            </button>
+                            <div class="folder-create-actions">
+                                <button type="submit" class="btn btn-primary">
+                                    "create"
+                                </button>
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost"
+                                    on:click=move |_| {
+                                        set_creating.set(false);
+                                        set_new_name.set(String::new());
+                                        set_new_password.set(String::new());
+                                    }
+                                >
+                                    "cancel"
+                                </button>
+                            </div>
                         </form>
                     }
                         .into_any()
