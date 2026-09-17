@@ -1001,10 +1001,26 @@ input[type="color"] {
   gap: 1rem;
 }
 
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-right: 1.5rem;
+}
+
+.modal-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
 .modal-rename {
   display: flex;
   gap: 0.35rem;
-  padding-right: 1.5rem;
+  width: 100%;
 }
 
 .modal-title-input {
@@ -1017,6 +1033,7 @@ input[type="color"] {
 }
 
 .modal-rename button {
+  flex-shrink: 0;
   padding: 0.35rem 0.6rem;
 }
 

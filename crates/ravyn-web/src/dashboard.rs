@@ -5,7 +5,7 @@ use crate::browser::{copy_to_clipboard, submit_input_form, sync_dropped_files};
 use crate::format::{format_date, format_size};
 use crate::icons::{
     CheckIcon, CloseIcon, CopyIcon, DownloadIcon, ExternalLinkIcon, FileTypeIcon, FolderIcon,
-    LockIcon, PlusIcon, RavenIcon, SearchIcon, TrashIcon,
+    LockIcon, PencilIcon, PlusIcon, RavenIcon, SearchIcon, TrashIcon,
 };
 use crate::server_fns::{
     get_registration_status, list_files, list_folders, me, AccountInfo, CreateFolder, DeleteFile,
@@ -775,7 +775,9 @@ fn FileModal(
     opened_file: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let (copied, set_copied) = signal(false);
+    let (renaming, set_renaming) = signal(false);
     let (password_input, set_password_input) = signal(String::new());
+    let (editing_password, set_editing_password) = signal(false);
     let (name_input, set_name_input) = signal(file.original_name.clone());
 
     let is_image = file.content_type.starts_with("image/");
@@ -789,6 +791,8 @@ fn FileModal(
     let id_for_rename = file.id.clone();
     let current_folder = file.folder_id.clone();
     let has_password = file.has_password;
+    let display_name = file.original_name.clone();
+    let name_for_cancel = file.original_name.clone();
     let short_hash = file.sha256.get(..12).unwrap_or(&file.sha256).to_string();
 
     let close = move |_| opened_file.set(None);
@@ -825,31 +829,62 @@ fn FileModal(
                 </div>
 
                 <div class="modal-body">
-                    <form
-                        class="modal-rename"
-                        on:submit=move |ev| {
-                            ev.prevent_default();
-                            let name = name_input.get();
-                            if !name.trim().is_empty() {
-                                actions
-                                    .rename_file
-                                    .dispatch(RenameFile {
-                                        id: id_for_rename.clone(),
-                                        name,
-                                    });
+                    <div class="modal-title-row">
+                        {move || {
+                            let name_for_cancel = name_for_cancel.clone();
+                            let id_for_rename = id_for_rename.clone();
+                            if renaming.get() {
+                                view! {
+                                    <form
+                                        class="modal-rename"
+                                        on:submit=move |ev| {
+                                            ev.prevent_default();
+                                            let name = name_input.get();
+                                            if !name.trim().is_empty() {
+                                                actions
+                                                    .rename_file
+                                                    .dispatch(RenameFile {
+                                                        id: id_for_rename.clone(),
+                                                        name,
+                                                    });
+                                            }
+                                            set_renaming.set(false);
+                                        }
+                                    >
+                                        <input
+                                            class="modal-title-input"
+                                            type="text"
+                                            prop:value=move || name_input.get()
+                                            on:input=move |ev| {
+                                                set_name_input.set(event_target_value(&ev))
+                                            }
+                                        />
+                                        <button type="submit" class="btn btn-ghost">
+                                            "save"
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="btn btn-ghost"
+                                            on:click=move |_| {
+                                                set_name_input.set(name_for_cancel.clone());
+                                                set_renaming.set(false);
+                                            }
+                                        >
+                                            "cancel"
+                                        </button>
+                                    </form>
+                                }
+                                    .into_any()
+                            } else {
+                                view! {
+                                    <h3 class="modal-title" title=display_name.clone()>
+                                        {display_name.clone()}
+                                    </h3>
+                                }
+                                    .into_any()
                             }
-                        }
-                    >
-                        <input
-                            class="modal-title-input"
-                            type="text"
-                            prop:value=move || name_input.get()
-                            on:input=move |ev| set_name_input.set(event_target_value(&ev))
-                        />
-                        <button type="submit" class="btn btn-ghost" title="save name">
-                            <CheckIcon/>
-                        </button>
-                    </form>
+                        }}
+                    </div>
 
                     <dl class="modal-meta">
                         <div>
@@ -905,33 +940,55 @@ fn FileModal(
                         </select>
                     </div>
 
-                    <form
-                        class="password-inline"
-                        on:submit=move |ev| {
-                            ev.prevent_default();
-                            let password = password_input.get();
-                            actions
-                                .file_password
-                                .dispatch(SetFilePassword {
-                                    id: id_for_password.clone(),
-                                    password: (!password.is_empty()).then_some(password),
-                                });
-                            set_password_input.set(String::new());
-                        }
-                    >
-                        <input
-                            type="password"
-                            placeholder=if has_password {
-                                "change or clear password"
-                            } else {
-                                "set a password"
-                            }
-                            on:input=move |ev| set_password_input.set(event_target_value(&ev))
-                        />
-                        <button type="submit" class="btn btn-ghost">
-                            "save"
-                        </button>
-                    </form>
+                    {move || {
+                        let id_for_password = id_for_password.clone();
+                        editing_password
+                            .get()
+                            .then(|| {
+                                view! {
+                                    <form
+                                        class="password-inline"
+                                        on:submit=move |ev| {
+                                            ev.prevent_default();
+                                            let password = password_input.get();
+                                            actions
+                                                .file_password
+                                                .dispatch(SetFilePassword {
+                                                    id: id_for_password.clone(),
+                                                    password: (!password.is_empty()).then_some(password),
+                                                });
+                                            set_password_input.set(String::new());
+                                            set_editing_password.set(false);
+                                        }
+                                    >
+                                        <input
+                                            type="password"
+                                            placeholder=if has_password {
+                                                "change or clear password"
+                                            } else {
+                                                "set a password"
+                                            }
+                                            on:input=move |ev| {
+                                                set_password_input.set(event_target_value(&ev))
+                                            }
+                                        />
+                                        <button type="submit" class="btn btn-ghost">
+                                            "save"
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="btn btn-ghost"
+                                            on:click=move |_| {
+                                                set_password_input.set(String::new());
+                                                set_editing_password.set(false);
+                                            }
+                                        >
+                                            "cancel"
+                                        </button>
+                                    </form>
+                                }
+                            })
+                    }}
 
                     <div class="modal-actions">
                         <button
@@ -964,6 +1021,22 @@ fn FileModal(
                         >
                             <DownloadIcon/>
                         </a>
+                        <button
+                            type="button"
+                            class="icon-btn"
+                            title="edit name"
+                            on:click=move |_| set_renaming.set(true)
+                        >
+                            <PencilIcon/>
+                        </button>
+                        <button
+                            type="button"
+                            class="icon-btn"
+                            title=if has_password { "change password" } else { "set a password" }
+                            on:click=move |_| set_editing_password.set(true)
+                        >
+                            <LockIcon/>
+                        </button>
                         <button
                             class="icon-btn danger"
                             title="delete"
