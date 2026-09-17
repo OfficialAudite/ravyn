@@ -67,10 +67,19 @@ fn max_upload_bytes() -> usize {
 /// forwarding the session cookie unchanged. Kept as a plain form POST
 /// (rather than a Leptos server function) so uploads keep working even
 /// without JS/hydration.
+///
+/// Streams the body through rather than buffering it: taking `body` as
+/// `axum::body::Body` (a stream) instead of `axum::body::Bytes` (which
+/// axum would fully materialize before this handler even runs) means this
+/// server never holds more than one chunk of the upload in memory, no
+/// matter how large it is — the same fix `ravyn-api`'s own multipart
+/// handling needed, and for the same reason: this server sits in front of
+/// that one, so buffering here would have defeated buffering being fixed
+/// there.
 #[cfg(feature = "ssr")]
 async fn upload_proxy(
     headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
@@ -79,7 +88,7 @@ async fn upload_proxy(
 
     let mut request = reqwest::Client::new()
         .post(format!("{api_base}/files"))
-        .body(body);
+        .body(reqwest::Body::wrap_stream(body.into_data_stream()));
 
     if let Some(cookie) = headers
         .get(axum::http::header::COOKIE)

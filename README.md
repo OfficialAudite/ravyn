@@ -72,9 +72,18 @@ That's the S3-side chunking; separately, both `ravyn-api` and `ravyn-web` cap th
 size of an incoming upload request itself (Axum's own default is 2 MB, nowhere near
 enough for real files) — `MAX_UPLOAD_MB` overrides it on both, in megabytes, and
 needs to be set the same on both since `ravyn-web`'s `/upload` receives the whole
-request itself before proxying it on to `ravyn-api`. Each part of a multipart upload
-is still buffered fully in memory before being written to storage, so this is a
-generous default (2048 MB), not an unbounded one.
+request itself before proxying it on to `ravyn-api`. This is a policy limit, not a
+memory-safety one, now: everything except images streams through both servers and
+into storage a chunk at a time (`Storage::start_upload` in
+`crates/ravyn-storage/src/lib.rs`, `save_streamed_part` in
+`crates/ravyn-api/src/routes/files.rs`) rather than ever sitting fully in memory —
+confirmed by watching the API container's memory stay flat (tens of MB) while
+uploading a 200MB file. Images still buffer fully, since thumbnailing needs the
+whole decoded image in memory anyway and they're small enough that it costs
+nothing. A storage quota is enforced against the running total as chunks arrive for
+a streamed upload — since nothing tells us a part's total size up front — aborting
+the in-progress write (no orphaned data left in storage) rather than only checking
+after the whole oversized file has already been written.
 
 Dropping (or selecting) more than one file at once at `/upload` sends them all as
 separate parts of the same request — `POST /files` accepts one or many parts. A
