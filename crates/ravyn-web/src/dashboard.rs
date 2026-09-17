@@ -3,6 +3,7 @@ use leptos_router::components::{Outlet, A};
 
 use crate::browser::{
     copy_to_clipboard, paste_text_and_submit, submit_input_form, sync_dropped_files,
+    upload_large_files,
 };
 use crate::format::{format_date, format_size, EXPIRY_PRESETS};
 use crate::icons::{
@@ -479,6 +480,15 @@ pub fn UploadPage() -> impl IntoView {
 #[component]
 fn Dropzone() -> impl IntoView {
     let (dragging, set_dragging) = signal(false);
+    let uploading_name = RwSignal::new(None::<String>);
+    let progress = RwSignal::new((0u32, 0u32));
+    let upload_error = RwSignal::new(None::<String>);
+
+    let submit_or_chunk = move || {
+        if !upload_large_files("file-input", uploading_name, progress, upload_error) {
+            submit_input_form("file-input");
+        }
+    };
 
     view! {
         <div
@@ -492,6 +502,7 @@ fn Dropzone() -> impl IntoView {
             on:drop=move |ev| {
                 set_dragging.set(false);
                 sync_dropped_files(ev, "file-input");
+                submit_or_chunk();
             }
         >
             <form method="post" action="/upload" enctype="multipart/form-data">
@@ -504,7 +515,7 @@ fn Dropzone() -> impl IntoView {
                     name="file"
                     multiple
                     required
-                    on:change=move |_| submit_input_form("file-input")
+                    on:change=move |_| submit_or_chunk()
                 />
                 <noscript>
                     <button type="submit" class="btn btn-ghost dropzone-submit">
@@ -512,6 +523,28 @@ fn Dropzone() -> impl IntoView {
                     </button>
                 </noscript>
             </form>
+            {move || {
+                uploading_name
+                    .get()
+                    .map(|name| {
+                        let (sent, total) = progress.get();
+                        let percent = sent.checked_mul(100).and_then(|n| n.checked_div(total)).unwrap_or(0);
+                        view! {
+                            <div class="upload-progress">
+                                <p class="dropzone-hint">{format!("uploading {name}...")}</p>
+                                <progress max="100" value=percent></progress>
+                                <p class="dropzone-hint">
+                                    {format_size(sent as u64)} " of " {format_size(total as u64)}
+                                </p>
+                            </div>
+                        }
+                    })
+            }}
+            {move || {
+                upload_error
+                    .get()
+                    .map(|err| view! { <p class="form-error">{err}</p> })
+            }}
         </div>
     }
 }

@@ -7,7 +7,7 @@ async fn main() {
     use axum::{
         extract::DefaultBodyLimit,
         http::header::{HeaderValue, CACHE_CONTROL},
-        routing::{get, post},
+        routing::{get, patch, post},
         Router,
     };
     use leptos::prelude::*;
@@ -28,6 +28,7 @@ async fn main() {
             get(leptos_axum::handle_server_fns).post(leptos_axum::handle_server_fns),
         )
         .route("/upload", post(upload_proxy))
+        .route("/upload-chunk/:id/:part_number", patch(upload_chunk_proxy))
         .route("/preview/:id", get(preview_proxy))
         .route("/raw/:id", get(raw_proxy))
         .leptos_routes(&leptos_options, routes, {
@@ -109,6 +110,45 @@ async fn upload_proxy(
         }
         _ => (axum::http::StatusCode::BAD_GATEWAY, "upload failed").into_response(),
     }
+}
+
+/// The chunked-upload counterpart to `upload_proxy`, for the same reason:
+/// a chunk's bytes need to stream straight through rather than pass
+/// through a Leptos server function's own encoding. Unlike `upload_proxy`,
+/// this is called from JS (`browser::upload_large_file`), not a plain HTML
+/// form submit, so it relays the JSON body back rather than redirecting -
+/// the caller needs to read `received_bytes` out of it.
+#[cfg(feature = "ssr")]
+async fn upload_chunk_proxy(
+    axum::extract::Path((id, part_number)): axum::extract::Path<(String, i32)>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let api_base =
+        std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
+
+    let mut request = reqwest::Client::new()
+        .patch(format!("{api_base}/uploads/{id}/{part_number}"))
+        .body(reqwest::Body::wrap_stream(body.into_data_stream()));
+
+    if let Some(cookie) = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+    {
+        request = request.header("Cookie", cookie);
+    }
+
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(_) => return axum::http::StatusCode::BAD_GATEWAY.into_response(),
+    };
+
+    let status = axum::http::StatusCode::from_u16(response.status().as_u16())
+        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+    let bytes = response.bytes().await.unwrap_or_default();
+    (status, bytes).into_response()
 }
 
 /// Proxies the dashboard's own thumbnail previews through `ravyn-web`,

@@ -105,7 +105,7 @@ pub async fn get_file_thumbnail(
 /// encode itself cheap regardless of the original's size, and awaiting it
 /// guarantees a file never shows up in a list before its thumbnail exists
 /// (a backgrounded version of this raced the dashboard's first render).
-async fn generate_thumbnail(state: &AppState, id: FileId, bytes: &[u8]) {
+pub(super) async fn generate_thumbnail(state: &AppState, id: FileId, bytes: &[u8]) {
     let Ok(image) = image::load_from_memory(bytes) else {
         return;
     };
@@ -439,7 +439,12 @@ async fn save_streamed_part(
 /// template): the owner can only ever point this at wherever *they* choose
 /// to send *their own* upload notifications, the same as configuring an
 /// outgoing webhook in any other self-hosted tool.
-async fn notify_upload_webhook(state: &AppState, owner_id: UserId, file: &File, base_url: &str) {
+pub(super) async fn notify_upload_webhook(
+    state: &AppState,
+    owner_id: UserId,
+    file: &File,
+    base_url: &str,
+) {
     let webhook_url = match state.db.get_webhook_url(owner_id).await {
         Ok(Some(url)) => url,
         Ok(None) => return,

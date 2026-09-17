@@ -2,14 +2,16 @@ mod account;
 mod files;
 mod folders;
 mod shorten;
+mod uploads;
 mod view;
 
 pub use files::run_expiry_sweep;
+pub use uploads::run_chunked_upload_sweep;
 
 use axum::{
     extract::DefaultBodyLimit,
     http::{header, HeaderMap, StatusCode},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use ravyn_core::{auth as core_auth, File, User};
@@ -69,6 +71,14 @@ pub fn router(state: AppState) -> Router {
         .route("/short-urls", get(shorten::list_short_urls))
         .route("/short-urls/{id}", delete(shorten::delete_short_url))
         .route("/s/{slug}", get(shorten::redirect_short_url))
+        .route("/uploads", post(uploads::init_chunked_upload))
+        .route("/uploads/{id}", get(uploads::get_chunked_upload_status))
+        .route("/uploads/{id}", delete(uploads::cancel_chunked_upload))
+        .route(
+            "/uploads/{id}/complete",
+            post(uploads::complete_chunked_upload),
+        )
+        .route("/uploads/{id}/{part_number}", patch(uploads::upload_chunk))
         .layer(DefaultBodyLimit::max(max_upload_bytes()))
         .with_state(state)
 }

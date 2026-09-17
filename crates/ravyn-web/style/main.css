@@ -297,6 +297,23 @@ input[type="password"]:focus {
   margin: 0;
 }
 
+.upload-progress {
+  position: relative;
+  z-index: 1;
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.upload-progress progress {
+  width: 100%;
+  max-width: 320px;
+  height: 8px;
+  accent-color: var(--iris-2);
+}
+
 .paste-text form {
   display: flex;
   flex-direction: column;

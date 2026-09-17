@@ -1,4 +1,5 @@
 mod api_tokens;
+mod chunked_uploads;
 mod error;
 mod files;
 mod folders;

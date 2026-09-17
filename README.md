@@ -184,6 +184,34 @@ counter, since a self-hosted instance's file count stays small enough that this 
 cheap and it can never drift — and rejects with `507 Insufficient Storage` if the
 upload would exceed it.
 
+### Large file uploads (chunked)
+
+At or above 32 MB, a file no longer goes through the plain single-request upload -
+the browser splits it into 8 MB chunks (`crates/ravyn-web/src/browser.rs`,
+`upload_large_files`) and uploads them one at a time to `POST /uploads` (start),
+`PATCH /uploads/{id}/{part}` (each chunk), and `POST /uploads/{id}/complete`
+(finish). A chunk that fails is retried on its own, up to three times, so a network
+blip partway through a multi-gigabyte upload costs a few seconds of retrying that
+one chunk, not the whole file.
+
+Each chunk lands in storage under its own temporary key as soon as it arrives, and
+the server tracks which ones it has (`chunked_uploads`/`chunked_upload_parts`), so
+`GET /uploads/{id}` can always report exactly how much has been received. On
+completion, every chunk is read back in order and rewritten into one final
+multipart upload via the same `Storage::start_upload`/`write_chunk` primitives the
+plain streamed upload path already uses, computing the sha256 as it goes, then the
+temporary chunks are deleted. This works identically on local disk and S3, since
+neither backend needs anything beyond `get`/`put`/`delete` to support it. A
+background sweep (`run_chunked_upload_sweep`, mirroring `run_expiry_sweep`) deletes
+any upload abandoned for more than 24 hours, chunks included.
+
+What this doesn't do: automatically detect and offer to resume an interrupted
+upload after closing the tab or reloading the page. The server-side state needed
+for that already exists (the status endpoint is exactly what a "resume" button
+would call), but the browser doesn't currently keep track of in-progress uploads
+across a reload to offer it. Within one attempt, though, it's genuinely resumable
+against transient failures - that's what the per-chunk retry is for.
+
 ### Stats
 
 Every user sees their own usage in `/settings` (`GET /me/stats`): storage used

@@ -2,11 +2,13 @@ mod account;
 mod files;
 mod folders;
 mod shorten;
+mod uploads;
 
 pub use account::*;
 pub use files::*;
 pub use folders::*;
 pub use shorten::*;
+pub use uploads::*;
 
 use serde::{Deserialize, Serialize};
 

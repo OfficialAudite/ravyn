@@ -53,6 +53,7 @@ async fn main() {
     };
 
     tokio::spawn(routes::run_expiry_sweep(state.clone()));
+    tokio::spawn(routes::run_chunked_upload_sweep(state.clone()));
 
     let app = routes::router(state);
 

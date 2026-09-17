@@ -1,6 +1,7 @@
 pub mod auth;
 
 mod api_token;
+mod chunked_upload;
 mod embed;
 mod error;
 mod expiry;
@@ -15,6 +16,7 @@ mod short_url;
 mod user;
 
 pub use api_token::{ApiToken, ApiTokenId, ApiTokenValue};
+pub use chunked_upload::{ChunkedUpload, ChunkedUploadId};
 pub use embed::EmbedSettings;
 pub use error::CoreError;
 pub use expiry::ExpiryPreset;
