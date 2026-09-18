@@ -3,9 +3,9 @@ use leptos::prelude::*;
 use crate::format::{format_date, format_size, format_type_breakdown, EXPIRY_PRESETS};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_admin_stats, get_instance_settings, list_activity, list_invites, list_users, AdminUserInfo,
-    CreateInvite, DeleteInvite, DeleteUser, InstanceSettings, InviteInfo, SetInstanceSettings,
-    SetUserLimit,
+    get_admin_stats, get_instance_settings, get_storage_info, list_activity, list_invites,
+    list_users, AdminUserInfo, CreateInvite, DeleteInvite, DeleteUser, InstanceSettings,
+    InviteInfo, SetInstanceSettings, SetUserLimit,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,6 +86,7 @@ fn AdminTabs() -> impl IntoView {
                     <NamingSchemeSection/>
                     <ExpirySection/>
                     <ExifSection/>
+                    <StorageSection/>
                 }
                     .into_any()
             }
@@ -144,6 +145,76 @@ fn InstanceStatsSection() -> impl IntoView {
                         })
                 }}
             </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn StorageSection() -> impl IntoView {
+    let info = Resource::new(|| (), |_| get_storage_info());
+
+    view! {
+        <div class="settings-section">
+            <h3>"storage"</h3>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    info.get()
+                        .map(|result| match result {
+                            Ok(info) => {
+                                view! {
+                                    <div class="storage-info">
+                                        <p>
+                                            <span class="settings-label">"backend"</span>
+                                            {info.backend.clone()}
+                                        </p>
+                                        {info
+                                            .bucket
+                                            .clone()
+                                            .map(|value| {
+                                                view! {
+                                                    <p>
+                                                        <span class="settings-label">"bucket"</span>
+                                                        {value}
+                                                    </p>
+                                                }
+                                            })}
+                                        {info
+                                            .endpoint
+                                            .clone()
+                                            .map(|value| {
+                                                view! {
+                                                    <p>
+                                                        <span class="settings-label">"endpoint"</span>
+                                                        {value}
+                                                    </p>
+                                                }
+                                            })}
+                                        {info
+                                            .root
+                                            .clone()
+                                            .map(|value| {
+                                                view! {
+                                                    <p>
+                                                        <span class="settings-label">"path"</span>
+                                                        {value}
+                                                    </p>
+                                                }
+                                            })}
+                                    </div>
+                                }
+                                    .into_any()
+                            }
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load storage info"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+            <p class="settings-hint">
+                "switching backends (e.g. to S3) is done with environment variables on the API "
+                "server, see the README, not from here yet."
+            </p>
         </div>
     }
 }

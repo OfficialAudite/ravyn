@@ -435,11 +435,12 @@ The logged-in app is four pages under a shared layout (`DashboardLayout` in
 - `/` — browse: folder sidebar, search/type/sort filters, the file grid.
 - `/upload` — just the dropzone.
 - `/settings` — tabbed: **general** (account info + your own storage/file stats),
-  **api tokens**, **embeds**, **storage** (read-only backend summary).
+  **api tokens**, **embeds**.
 - `/admin` — instance-wide config, visible only to an admin (`crates/ravyn-web/src/admin.rs`,
   a "admin" nav link appears automatically for one). Also tabbed: **general**
-  (instance-wide stats + registration mode + invite codes), **users** (every account,
-  their usage, and their storage limit).
+  (instance-wide stats, registration mode, invite codes, and a read-only storage
+  backend summary), **users** (every account, their usage, their storage limit, and
+  a delete button), **activity** (the instance-wide log).
 
 All four share one set of file/folder resources and mutation actions via
 `provide_context`/`expect_context`, so an action taken on one page (say, deleting a

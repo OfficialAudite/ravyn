@@ -1207,11 +1207,15 @@ pub async fn set_webhook_settings(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// Read-only: which storage backend is currently configured, for display in
-/// the settings page. Never exposes credentials. Actually changing backends
-/// still means editing environment variables and restarting — that config
-/// isn't stored in the database.
-pub async fn storage_info(AuthedUser(_): AuthedUser) -> Response {
+/// Read-only: which storage backend is currently configured, for display on
+/// the admin page. Never exposes credentials. Actually changing backends
+/// still means editing environment variables and restarting, since that
+/// config isn't stored in the database.
+pub async fn storage_info(AuthedUser(user): AuthedUser) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
     let backend = std::env::var("STORAGE_BACKEND").unwrap_or_default();
     if backend == "s3" {
         Json(serde_json::json!({

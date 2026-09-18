@@ -3,9 +3,9 @@ use leptos::prelude::*;
 use crate::format::{format_date, format_size, format_type_breakdown};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_embed_settings, get_my_stats, get_storage_info, get_webhook_url, list_api_tokens, me,
-    ApiTokenInfo, ChangePassword, ConfirmTotp, CreateApiToken, DeleteApiToken, DisableTotp,
-    EmbedSettings, SetEmbedSettings, SetWebhookUrl, SetupTotp, TotpSetup,
+    get_embed_settings, get_my_stats, get_webhook_url, list_api_tokens, me, ApiTokenInfo,
+    ChangePassword, ConfirmTotp, CreateApiToken, DeleteApiToken, DisableTotp, EmbedSettings,
+    SetEmbedSettings, SetWebhookUrl, SetupTotp, TotpSetup,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -13,7 +13,6 @@ enum SettingsTab {
     General,
     ApiTokens,
     Embeds,
-    Storage,
 }
 
 #[component]
@@ -46,13 +45,6 @@ pub fn SettingsPage() -> impl IntoView {
             >
                 "embeds"
             </button>
-            <button
-                class="settings-tab"
-                class:active=move || tab.get() == SettingsTab::Storage
-                on:click=move |_| tab.set(SettingsTab::Storage)
-            >
-                "storage"
-            </button>
         </div>
         {move || match tab.get() {
             SettingsTab::General => {
@@ -70,7 +62,6 @@ pub fn SettingsPage() -> impl IntoView {
                 }
                     .into_any()
             }
-            SettingsTab::Storage => view! { <StorageSection/> }.into_any(),
         }}
     }
 }
@@ -794,74 +785,5 @@ fn TokenRow(token: ApiTokenInfo, delete_action: ServerAction<DeleteApiToken>) ->
                 <TrashIcon/>
             </button>
         </li>
-    }
-}
-
-#[component]
-fn StorageSection() -> impl IntoView {
-    let info = Resource::new(|| (), |_| get_storage_info());
-
-    view! {
-        <div class="settings-section">
-            <h3>"storage"</h3>
-            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
-                {move || {
-                    info.get()
-                        .map(|result| match result {
-                            Ok(info) => {
-                                view! {
-                                    <div class="storage-info">
-                                        <p>
-                                            <span class="settings-label">"backend"</span>
-                                            {info.backend.clone()}
-                                        </p>
-                                        {info
-                                            .bucket
-                                            .clone()
-                                            .map(|value| {
-                                                view! {
-                                                    <p>
-                                                        <span class="settings-label">"bucket"</span>
-                                                        {value}
-                                                    </p>
-                                                }
-                                            })}
-                                        {info
-                                            .endpoint
-                                            .clone()
-                                            .map(|value| {
-                                                view! {
-                                                    <p>
-                                                        <span class="settings-label">"endpoint"</span>
-                                                        {value}
-                                                    </p>
-                                                }
-                                            })}
-                                        {info
-                                            .root
-                                            .clone()
-                                            .map(|value| {
-                                                view! {
-                                                    <p>
-                                                        <span class="settings-label">"path"</span>
-                                                        {value}
-                                                    </p>
-                                                }
-                                            })}
-                                    </div>
-                                }
-                                    .into_any()
-                            }
-                            Err(_) => {
-                                view! { <p class="form-error">"failed to load storage info"</p> }
-                                    .into_any()
-                            }
-                        })
-                }}
-            </Suspense>
-            <p class="settings-hint">
-                "switching backends (e.g. to S3) is done with environment variables on the API server — see the README — not from here yet."
-            </p>
-        </div>
     }
 }
