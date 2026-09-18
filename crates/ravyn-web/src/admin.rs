@@ -3,9 +3,9 @@ use leptos::prelude::*;
 use crate::format::{format_date, format_size, format_type_breakdown, EXPIRY_PRESETS};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_admin_stats, get_instance_settings, get_storage_info, list_activity, list_invites,
-    list_users, AdminUserInfo, CreateInvite, DeleteInvite, DeleteUser, InstanceSettings,
-    InviteInfo, SetInstanceSettings, SetUserLimit,
+    get_admin_stats, get_cost_settings, get_instance_settings, get_storage_info, list_activity,
+    list_invites, list_users, AdminUserInfo, CostSettings, CreateInvite, DeleteInvite, DeleteUser,
+    InstanceSettings, InviteInfo, SetCostSettings, SetInstanceSettings, SetUserLimit,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -98,7 +98,8 @@ fn AdminTabs() -> impl IntoView {
 
 #[component]
 fn InstanceStatsSection() -> impl IntoView {
-    let stats = Resource::new(|| (), |_| get_admin_stats());
+    let cost_action = ServerAction::<SetCostSettings>::new();
+    let stats = Resource::new(move || cost_action.version().get(), |_| get_admin_stats());
 
     view! {
         <div class="settings-section">
@@ -109,6 +110,18 @@ fn InstanceStatsSection() -> impl IntoView {
                         .get()
                         .map(|result| match result {
                             Ok(stats) => {
+                                let cost_card = stats
+                                    .estimated_monthly_cost
+                                    .map(|cost| {
+                                        view! {
+                                            <div class="stat-card">
+                                                <span class="stat-value">
+                                                    {format!("{}{:.2}", stats.cost_currency, cost)}
+                                                </span>
+                                                <p class="stat-label">"est. monthly cost"</p>
+                                            </div>
+                                        }
+                                    });
                                 view! {
                                     <div class="stats-grid">
                                         <div class="stat-card">
@@ -125,6 +138,7 @@ fn InstanceStatsSection() -> impl IntoView {
                                             </span>
                                             <p class="stat-label">"total storage"</p>
                                         </div>
+                                        {cost_card}
                                     </div>
                                     <p class="stats-breakdown">
                                         {format_type_breakdown(
@@ -146,6 +160,107 @@ fn InstanceStatsSection() -> impl IntoView {
                 }}
             </Suspense>
         </div>
+        <CostEstimateSection cost_action/>
+    }
+}
+
+/// A fun approximation, not a bill: an admin plugs in what their storage
+/// provider charges per GB per month, and the total storage figure above
+/// gets multiplied out automatically. Left unconfigured by default (no
+/// price is a sensible guess), which hides the stat card entirely rather
+/// than showing a misleading $0.00.
+#[component]
+fn CostEstimateSection(cost_action: ServerAction<SetCostSettings>) -> impl IntoView {
+    let settings = Resource::new(move || cost_action.version().get(), |_| get_cost_settings());
+
+    view! {
+        <div class="settings-section">
+            <h3>"cost estimate"</h3>
+            <p class="settings-hint">
+                "not billing data, just total storage times whatever your provider charges "
+                "per GB per month."
+            </p>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    settings
+                        .get()
+                        .map(|result| match result {
+                            Ok(settings) => {
+                                view! { <CostEstimateForm settings cost_action /> }.into_any()
+                            }
+                            Err(_) => {
+                                view! { <p class="form-error">"failed to load cost settings"</p> }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn CostEstimateForm(
+    settings: CostSettings,
+    cost_action: ServerAction<SetCostSettings>,
+) -> impl IntoView {
+    let (currency, set_currency) = signal(settings.cost_currency);
+    let (price_input, set_price_input) = signal(
+        settings
+            .cost_per_gb_month
+            .map(|price| price.to_string())
+            .unwrap_or_default(),
+    );
+
+    view! {
+        <form
+            class="embed-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                let trimmed = price_input.get();
+                let trimmed = trimmed.trim();
+                let price = (!trimmed.is_empty()).then(|| trimmed.parse::<f64>().unwrap_or(0.0));
+                cost_action
+                    .dispatch(SetCostSettings {
+                        cost_per_gb_month: price,
+                        cost_currency: currency.get(),
+                    });
+            }
+        >
+            <div class="field">
+                <label for="cost-currency">"currency"</label>
+                <input
+                    id="cost-currency"
+                    type="text"
+                    placeholder="$"
+                    prop:value=move || currency.get()
+                    on:input=move |ev| set_currency.set(event_target_value(&ev))
+                />
+            </div>
+            <div class="field">
+                <label for="cost-price">"price per GB per month (blank to disable)"</label>
+                <input
+                    id="cost-price"
+                    type="text"
+                    inputmode="decimal"
+                    placeholder="e.g. 0.023"
+                    prop:value=move || price_input.get()
+                    on:input=move |ev| set_price_input.set(event_target_value(&ev))
+                />
+            </div>
+            <button type="submit" class="btn btn-primary">
+                "save"
+            </button>
+            {move || {
+                cost_action
+                    .value()
+                    .get()
+                    .map(|result| match result {
+                        Ok(_) => view! { <p class="settings-hint">"saved."</p> }.into_any(),
+                        Err(err) => view! { <p class="form-error">{err.to_string()}</p> }.into_any(),
+                    })
+            }}
+        </form>
     }
 }
 

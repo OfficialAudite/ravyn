@@ -243,6 +243,16 @@ join against `users`, so the log stays readable even for an account since rename
 or deleted. No filtering or pagination, just the most recent 200 entries in one
 list, which is plenty at self-hosted scale.
 
+### Cost estimate
+
+A fun, not-a-bill number on `/admin`'s general tab: fill in a currency and a price
+per GB per month (whatever your storage provider actually charges), and it gets
+multiplied against the instance's real total storage on every load. Left
+unconfigured by default, since there's no sensible price to guess at, which hides
+the stat card entirely rather than showing a misleading $0.00. Currency is a plain
+text field, not a fixed list, so `$`, `kr`, or any other symbol or code works.
+Nothing here tracks request or bandwidth costs, since this app doesn't log either.
+
 ### Rate limiting
 
 A handful of endpoints are protected against brute-forcing and casual abuse with a

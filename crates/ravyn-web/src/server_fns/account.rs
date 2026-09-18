@@ -881,6 +881,8 @@ pub struct InstanceStats {
     pub total_storage_bytes: i64,
     #[serde(flatten)]
     pub by_type: TypeCounts,
+    pub estimated_monthly_cost: Option<f64>,
+    pub cost_currency: String,
 }
 
 #[server]
@@ -906,6 +908,66 @@ pub async fn get_admin_stats() -> Result<InstanceStats, ServerFnError> {
         .json()
         .await
         .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CostSettings {
+    pub cost_per_gb_month: Option<f64>,
+    pub cost_currency: String,
+}
+
+#[server]
+pub async fn get_cost_settings() -> Result<CostSettings, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/admin/cost-settings", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("not authorized"));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[server]
+pub async fn set_cost_settings(
+    cost_per_gb_month: Option<f64>,
+    cost_currency: String,
+) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .put(format!("{}/admin/cost-settings", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .json(&serde_json::json!({
+            "cost_per_gb_month": cost_per_gb_month,
+            "cost_currency": cost_currency,
+        }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("failed to save cost settings"));
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

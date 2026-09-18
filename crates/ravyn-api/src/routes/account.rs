@@ -995,7 +995,16 @@ pub struct InstanceStats {
     total_storage_bytes: i64,
     #[serde(flatten)]
     by_type: TypeCounts,
+    /// `None` until an admin fills in a price on the cost estimate form -
+    /// there's nothing sensible to guess at otherwise.
+    estimated_monthly_cost: Option<f64>,
+    cost_currency: String,
 }
+
+/// A gibibyte, matching the base the UI already uses everywhere else it
+/// shows a size (`format_size` in `crates/ravyn-web/src/format.rs`) - the
+/// estimate should agree with the number sitting right next to it.
+const BYTES_PER_GB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 /// The instance-wide counterpart to `my_stats` — every user's usage summed
 /// together, admin only. Reuses `list_files_for_owner` per user rather than
@@ -1032,13 +1041,88 @@ pub async fn admin_stats(AuthedUser(user): AuthedUser, State(state): State<AppSt
         }
     }
 
+    let (cost_per_gb_month, cost_currency) = state
+        .db
+        .get_cost_settings()
+        .await
+        .unwrap_or((None, "$".to_string()));
+    let estimated_monthly_cost =
+        cost_per_gb_month.map(|price| (total_storage_bytes as f64 / BYTES_PER_GB) * price);
+
     Json(InstanceStats {
         total_users: users.len() as i64,
         total_files,
         total_storage_bytes,
         by_type,
+        estimated_monthly_cost,
+        cost_currency,
     })
     .into_response()
+}
+
+#[derive(Serialize)]
+pub struct CostSettingsResponse {
+    cost_per_gb_month: Option<f64>,
+    cost_currency: String,
+}
+
+/// Read side of the cost estimate form: whatever price-per-GB an admin has
+/// filled in, purely for display and editing - `admin_stats` is what
+/// actually multiplies it against real usage.
+pub async fn get_cost_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    match state.db.get_cost_settings().await {
+        Ok((cost_per_gb_month, cost_currency)) => Json(CostSettingsResponse {
+            cost_per_gb_month,
+            cost_currency,
+        })
+        .into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to load cost settings");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SetCostSettingsRequest {
+    cost_per_gb_month: Option<f64>,
+    cost_currency: String,
+}
+
+/// A single dedicated form rather than folding this into
+/// `set_instance_settings`'s "every field optional" shape: an admin
+/// clearing the price back to "not configured" needs to send an explicit
+/// `null`, which that endpoint's convention (an absent field means "leave
+/// this alone") can't express.
+pub async fn set_cost_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Json(body): Json<SetCostSettingsRequest>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let currency = body.cost_currency.trim();
+    let currency = if currency.is_empty() { "$" } else { currency };
+
+    if let Err(err) = state
+        .db
+        .set_cost_settings(body.cost_per_gb_month, currency)
+        .await
+    {
+        tracing::error!(%err, "failed to save cost settings");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[derive(Deserialize)]

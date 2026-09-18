@@ -68,6 +68,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/users/{id}", delete(account::delete_user))
         .route("/admin/stats", get(account::admin_stats))
         .route("/admin/activity", get(account::list_activity))
+        .route(
+            "/admin/cost-settings",
+            get(account::get_cost_settings).put(account::set_cost_settings),
+        )
         .route("/v/{id}", get(view::view_file))
         .route("/short-urls", post(shorten::create_short_url))
         .route("/short-urls", get(shorten::list_short_urls))

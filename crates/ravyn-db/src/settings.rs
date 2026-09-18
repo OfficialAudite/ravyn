@@ -102,4 +102,34 @@ impl Db {
 
         Ok(())
     }
+
+    /// `cost_per_gb_month` is `None` until an admin fills it in - there's no
+    /// sensible default price to guess at, unlike every other instance
+    /// setting here, so this one stays unconfigured (and the cost estimate
+    /// hidden) rather than defaulting to some made-up number.
+    pub async fn get_cost_settings(&self) -> Result<(Option<f64>, String), DbError> {
+        let row: (Option<f64>, String) = sqlx::query_as(
+            "select cost_per_gb_month, cost_currency from instance_settings where id = 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row)
+    }
+
+    pub async fn set_cost_settings(
+        &self,
+        cost_per_gb_month: Option<f64>,
+        cost_currency: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "update instance_settings set cost_per_gb_month = $1, cost_currency = $2 where id = 1",
+        )
+        .bind(cost_per_gb_month)
+        .bind(cost_currency)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
 }
