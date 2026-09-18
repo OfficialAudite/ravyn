@@ -132,6 +132,20 @@ impl Db {
             .collect())
     }
 
+    pub async fn list_chunked_uploads_for_owner(
+        &self,
+        owner_id: UserId,
+    ) -> Result<Vec<ChunkedUpload>, DbError> {
+        let rows = sqlx::query_as::<_, ChunkedUploadRow>(
+            "select * from chunked_uploads where owner_id = $1",
+        )
+        .bind(owner_id.0)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(ChunkedUpload::from).collect())
+    }
+
     /// Feeds the abandoned-upload sweep, same shape as
     /// `list_expired_files`: anything older than `cutoff`, regardless of
     /// owner, gets cleaned up rather than left taking up storage forever.

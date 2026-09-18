@@ -910,6 +910,18 @@ button.tag-chip:hover {
   width: 90px;
 }
 
+.delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.delete-confirm-text {
+  font-size: 0.8rem;
+  color: var(--danger);
+}
+
 .folder-view-title {
   font-family: var(--font-display);
   font-weight: 600;

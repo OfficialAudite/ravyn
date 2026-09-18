@@ -845,6 +845,78 @@ pub async fn set_user_limit(
     StatusCode::NO_CONTENT.into_response()
 }
 
+/// Deletes an account and everything it owns: every foreign key pointing
+/// at `users.id` cascades in the database (files, folders, sessions, api
+/// tokens, short urls, chunked uploads), but that only drops rows - the
+/// actual bytes in storage need deleting first, same as a single file
+/// delete already has to do. Refuses to delete the caller's own account,
+/// since that's how an instance ends up with no admin able to fix it.
+pub async fn delete_user(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    if id == user.id.0 {
+        return (StatusCode::BAD_REQUEST, "can't delete your own account").into_response();
+    }
+
+    let target = match state.db.get_user_by_id(UserId(id)).await {
+        Ok(Some(target)) => target,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to look up user");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let files = state
+        .db
+        .list_files_for_owner(target.id)
+        .await
+        .unwrap_or_default();
+    for file in &files {
+        let _ = state.storage.delete(&file.storage_key).await;
+        let _ = state
+            .thumbnails
+            .delete(&super::files::thumbnail_key(file.id))
+            .await;
+    }
+
+    let chunked_uploads = state
+        .db
+        .list_chunked_uploads_for_owner(target.id)
+        .await
+        .unwrap_or_default();
+    for upload in &chunked_uploads {
+        if let Ok(parts) = state.db.list_chunked_upload_parts(upload.id).await {
+            for part in parts {
+                let _ = state.storage.delete(&part.storage_key).await;
+            }
+        }
+    }
+
+    if let Err(err) = state.db.delete_user(target.id).await {
+        tracing::error!(%err, "failed to delete user");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    let _ = state
+        .db
+        .log_activity(
+            Some(user.id),
+            &user.username,
+            "deleted a user",
+            Some(&target.username),
+        )
+        .await;
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// Buckets a content type the same way the browse page's type filter does
 /// (`TypeFilter` in `crates/ravyn-web/src/dashboard.rs`) — kept as a small
 /// duplicate here rather than a shared crate, since it's four lines and the

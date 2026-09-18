@@ -85,6 +85,22 @@ impl Db {
         Ok(rows.into_iter().map(User::from).collect())
     }
 
+    /// Every foreign key pointing at `users.id` is `on delete cascade`
+    /// (files, folders, sessions, api tokens, short urls, chunked uploads,
+    /// invites they created) or `on delete set null` (activity log, invites
+    /// they redeemed) — see the migrations. This only drops the row; the
+    /// caller is still on the hook for deleting the user's actual file
+    /// bytes and chunk parts from storage first, same as a single file
+    /// delete has to.
+    pub async fn delete_user(&self, id: UserId) -> Result<(), DbError> {
+        sqlx::query("delete from users where id = $1")
+            .bind(id.0)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     /// Bytes currently stored across every file this user owns — computed
     /// on the fly rather than kept as a running counter, since a self-hosted
     /// instance's file count stays small enough that summing is cheap and

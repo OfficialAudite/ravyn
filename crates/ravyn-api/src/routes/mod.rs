@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router {
         .route("/invites/{id}", delete(account::delete_invite))
         .route("/admin/users", get(account::list_users))
         .route("/admin/users/{id}/limit", put(account::set_user_limit))
+        .route("/admin/users/{id}", delete(account::delete_user))
         .route("/admin/stats", get(account::admin_stats))
         .route("/admin/activity", get(account::list_activity))
         .route("/v/{id}", get(view::view_file))

@@ -184,6 +184,16 @@ counter, since a self-hosted instance's file count stays small enough that this 
 cheap and it can never drift — and rejects with `507 Insufficient Storage` if the
 upload would exceed it.
 
+Each row also has a delete button, gated behind an inline confirmation (`delete X
+and all their files? this can't be undone`) since it's irreversible. Deleting an
+account removes their actual file bytes and any in-progress chunked upload's
+parts from storage first, then the user row itself, which cascades everything
+else in the database (files, folders, sessions, api tokens, short urls) via
+foreign keys. Activity log entries survive, since `activity_log.username` is a
+snapshot rather than a live join - see Activity log below. An admin can't delete
+their own account through this, so an instance never ends up with nobody able to
+manage it.
+
 ### Large file uploads (chunked)
 
 At or above 32 MB, a file no longer goes through the plain single-request upload -

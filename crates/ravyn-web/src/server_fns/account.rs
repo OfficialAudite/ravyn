@@ -804,6 +804,33 @@ pub async fn set_user_limit(
     Ok(())
 }
 
+#[server]
+pub async fn delete_user(id: String) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = reqwest::Client::new()
+        .delete(format!("{}/admin/users/{id}", ssr::api_base_url()))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        let message = response.text().await.unwrap_or_default();
+        return Err(ServerFnError::new(if message.is_empty() {
+            "failed to delete user".to_string()
+        } else {
+            message
+        }));
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TypeCounts {
     pub images: i64,

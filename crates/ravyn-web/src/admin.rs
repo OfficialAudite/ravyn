@@ -4,7 +4,8 @@ use crate::format::{format_date, format_size, format_type_breakdown, EXPIRY_PRES
 use crate::icons::TrashIcon;
 use crate::server_fns::{
     get_admin_stats, get_instance_settings, list_activity, list_invites, list_users, AdminUserInfo,
-    CreateInvite, DeleteInvite, InstanceSettings, InviteInfo, SetInstanceSettings, SetUserLimit,
+    CreateInvite, DeleteInvite, DeleteUser, InstanceSettings, InviteInfo, SetInstanceSettings,
+    SetUserLimit,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -624,7 +625,11 @@ fn InviteRow(invite: InviteInfo, delete_action: ServerAction<DeleteInvite>) -> i
 #[component]
 fn UsersSection() -> impl IntoView {
     let limit_action = ServerAction::<SetUserLimit>::new();
-    let users = Resource::new(move || limit_action.version().get(), |_| list_users());
+    let delete_action = ServerAction::<DeleteUser>::new();
+    let users = Resource::new(
+        move || (limit_action.version().get(), delete_action.version().get()),
+        |_| list_users(),
+    );
 
     view! {
         <div class="settings-section">
@@ -643,7 +648,9 @@ fn UsersSection() -> impl IntoView {
                                     <ul class="token-list">
                                         {users
                                             .into_iter()
-                                            .map(|info| view! { <UserRow info limit_action /> })
+                                            .map(|info| {
+                                                view! { <UserRow info limit_action delete_action /> }
+                                            })
                                             .collect_view()}
                                     </ul>
                                 }
@@ -662,12 +669,19 @@ fn UsersSection() -> impl IntoView {
 const MIB: i64 = 1024 * 1024;
 
 #[component]
-fn UserRow(info: AdminUserInfo, limit_action: ServerAction<SetUserLimit>) -> impl IntoView {
+fn UserRow(
+    info: AdminUserInfo,
+    limit_action: ServerAction<SetUserLimit>,
+    delete_action: ServerAction<DeleteUser>,
+) -> impl IntoView {
     let id = info.id.clone();
     let id_for_clear = info.id.clone();
+    let id_for_delete = info.id.clone();
+    let username = info.username.clone();
     let current_mib = info.max_storage_bytes.map(|bytes| (bytes / MIB).max(1));
     let (limit_input, set_limit_input) =
         signal(current_mib.map(|mib| mib.to_string()).unwrap_or_default());
+    let (confirming_delete, set_confirming_delete) = signal(false);
     let used = format_size(info.storage_used_bytes.max(0) as u64);
     let limit_display = match info.max_storage_bytes {
         Some(bytes) => format_size(bytes.max(0) as u64),
@@ -721,6 +735,57 @@ fn UserRow(info: AdminUserInfo, limit_action: ServerAction<SetUserLimit>) -> imp
                 >
                     "remove limit"
                 </button>
+                {move || {
+                    if confirming_delete.get() {
+                        let id = id_for_delete.clone();
+                        let id_for_error_check = id.clone();
+                        view! {
+                            <span class="delete-confirm">
+                                <span class="delete-confirm-text">
+                                    "delete " {username.clone()}
+                                    " and all their files? this can't be undone."
+                                </span>
+                                <button
+                                    class="btn btn-danger"
+                                    on:click=move |_| {
+                                        delete_action.dispatch(DeleteUser { id: id.clone() });
+                                    }
+                                >
+                                    "yes, delete"
+                                </button>
+                                <button
+                                    class="btn btn-ghost"
+                                    on:click=move |_| set_confirming_delete.set(false)
+                                >
+                                    "cancel"
+                                </button>
+                                {move || {
+                                    let is_this_row = delete_action
+                                        .input()
+                                        .get()
+                                        .is_some_and(|input| input.id == id_for_error_check);
+                                    is_this_row
+                                        .then(|| delete_action.value().get())
+                                        .flatten()
+                                        .and_then(|result| result.err())
+                                        .map(|err| view! { <p class="form-error">{err.to_string()}</p> })
+                                }}
+                            </span>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <button
+                                class="icon-btn-sm"
+                                title="delete user"
+                                on:click=move |_| set_confirming_delete.set(true)
+                            >
+                                <TrashIcon/>
+                            </button>
+                        }
+                            .into_any()
+                    }
+                }}
             </div>
         </li>
     }

@@ -21,7 +21,7 @@ pub struct AccessQuery {
     password: Option<String>,
 }
 
-fn thumbnail_key(id: FileId) -> String {
+pub(super) fn thumbnail_key(id: FileId) -> String {
     format!("{}.avif", id.0)
 }
 
