@@ -3,3 +3,7 @@
 .env
 *.log
 .claude/
+
+# The tryravyn.com marketing site and bare-metal install script.
+# Lives only locally, deployed by hand onto a separate Caddy container.
+/site

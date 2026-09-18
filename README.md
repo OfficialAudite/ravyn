@@ -485,6 +485,15 @@ not `localhost`) — this is the single most common misconfiguration after a fir
 deploy (copied links or webhook notifications pointing at `localhost` instead of the
 real, working URL).
 
+**Prebuilt images**: `.github/workflows/docker-publish.yml` builds and pushes
+`ghcr.io/officialaudite/ravyn-api` and `ghcr.io/officialaudite/ravyn-web` on every
+push to `master` (tagged `latest`) and on any `v*` git tag (tagged with that
+version). Swap `build:` for `image: ghcr.io/officialaudite/ravyn-api:latest` (and
+the same for `web`) in `docker-compose.yml` to run from those instead of building
+locally. A package is private by default the first time it's published, even on a
+public repo — go to the package's own settings on GitHub and make it public, or
+the `image:` pull above fails for anyone without registry access.
+
 ## Extending it
 
 - **New storage backend**: add a variant to `StorageConfig` in
