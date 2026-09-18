@@ -176,3 +176,7 @@ rather not run containers.
   tab enum plus a `match` over it (`SettingsTab` in `settings.rs`, `AdminTab` in
   `admin.rs`), add a variant, a `.settings-tab` button, and a match arm rendering
   whatever section component you add.
+
+## License
+
+[MIT](LICENSE)
