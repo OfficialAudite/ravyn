@@ -230,6 +230,63 @@ input[type="password"]:focus {
   background: var(--panel);
 }
 
+/* mobile bottom tab bar - hidden on desktop, turned on below along with
+   the rest of the touch-screen adjustments (bigger tap targets, actions
+   that don't depend on :hover to appear). */
+.mobile-tabbar {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .top-nav {
+    display: none;
+  }
+
+  .mobile-tabbar {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    gap: 0.25rem;
+    padding: 0.3rem 0.3rem calc(0.3rem + env(safe-area-inset-bottom));
+    background: var(--panel);
+    border-top: 1px solid var(--hairline);
+  }
+
+  .mobile-tab {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2rem;
+    min-height: 52px;
+    padding: 0.35rem 0.25rem;
+    border-radius: var(--radius-sm);
+    color: var(--fog);
+    text-decoration: none;
+    font-size: 0.65rem;
+  }
+
+  .mobile-tab svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .mobile-tab[aria-current="page"] {
+    color: var(--paper);
+    background: var(--panel-raised);
+  }
+
+  /* Room for the fixed tab bar so the last bit of a page's content never
+     sits underneath it. */
+  main {
+    padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
+  }
+}
+
 /* dropzone -------------------------------------------------------------- */
 
 .dropzone {
@@ -527,8 +584,10 @@ input[type="password"]:focus {
     padding-bottom: 0.25rem;
   }
 
+  .folder-sidebar > .folder-tab,
   .folder-row {
     flex-shrink: 0;
+    width: auto;
   }
 
   .folder-tab-new,
@@ -616,6 +675,12 @@ input[type="password"]:focus {
   background: var(--panel-raised);
   border-color: var(--accent);
   color: var(--paper);
+}
+
+@media (max-width: 700px) {
+  .type-tab {
+    padding: 0.5rem 0.85rem;
+  }
 }
 
 .sort-select,
@@ -744,6 +809,38 @@ input[type="password"]:focus {
 .icon-btn svg {
   width: 15px;
   height: 15px;
+}
+
+@media (max-width: 700px) {
+  /* `.file-actions` normally only shows on `:hover`/`:focus-within`, which
+     a touchscreen never reliably triggers - without this, the copy/open/
+     download/delete icons on a file card are effectively unreachable by
+     tap. Only `opacity` needs to change: the container itself already
+     stays `pointer-events: none` at every width (see the base rule above)
+     so taps everywhere else on the thumbnail still reach `.file-thumb-btn`
+     underneath - only the icon buttons opt back into `pointer-events: auto`
+     individually. */
+  .file-actions {
+    opacity: 1;
+    background: linear-gradient(0deg, rgba(0, 0, 0, 0.65), transparent 65%);
+  }
+
+  /* Bigger tap targets - the desktop sizing (24px/30px) suits a mouse
+     pointer but sits under the ~40px a finger needs. */
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .icon-btn-sm {
+    width: 34px;
+    height: 34px;
+  }
+
+  .icon-btn-sm svg {
+    width: 15px;
+    height: 15px;
+  }
 }
 
 .icon-btn.copied,
@@ -1286,6 +1383,11 @@ input[type="color"] {
 
   .modal-body {
     overflow-y: visible;
+  }
+
+  .modal-actions .icon-btn {
+    width: 42px;
+    height: 42px;
   }
 }
 

@@ -8,7 +8,8 @@ use crate::browser::{
 use crate::format::{format_date, format_size, EXPIRY_PRESETS};
 use crate::icons::{
     CheckIcon, ClockIcon, CloseIcon, CopyIcon, DownloadIcon, ExternalLinkIcon, FileTypeIcon,
-    FolderIcon, LockIcon, PencilIcon, PlusIcon, RavenIcon, SearchIcon, TagIcon, TrashIcon,
+    FolderIcon, GridIcon, LockIcon, PencilIcon, PlusIcon, RavenIcon, SearchIcon, SettingsIcon,
+    ShieldIcon, TagIcon, TrashIcon, UploadIcon,
 };
 use crate::server_fns::{
     get_registration_status, list_files, list_folders, list_short_urls, me, AccountInfo,
@@ -245,6 +246,13 @@ fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
     let ctx = expect_context::<DashboardContext>();
     let account = ctx.account;
 
+    let is_admin = move || {
+        account
+            .get()
+            .and_then(Result::ok)
+            .is_some_and(|info| info.is_admin)
+    };
+
     view! {
         <div class="topbar">
             <span class="wordmark">"ravyn"</span>
@@ -255,16 +263,7 @@ fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
                 <A href="/upload">"upload"</A>
                 <A href="/settings">"settings"</A>
                 <Suspense fallback=|| ()>
-                    {move || {
-                        account
-                            .get()
-                            .map(|result| match result {
-                                Ok(info) if info.is_admin => {
-                                    view! { <A href="/admin">"admin"</A> }.into_any()
-                                }
-                                _ => ().into_any(),
-                            })
-                    }}
+                    {move || is_admin().then(|| view! { <A href="/admin">"admin"</A> })}
                 </Suspense>
             </nav>
             <button
@@ -281,6 +280,38 @@ fn TopNav(logout: ServerAction<Logout>) -> impl IntoView {
                 "log out"
             </button>
         </div>
+        // A separate bottom tab bar for narrow screens rather than trying to
+        // squeeze `.top-nav` into the same cramped row as the logo and log
+        // out button - CSS alone toggles which one is visible (see
+        // `.mobile-tabbar`/`.top-nav` in main.css), so there's no separate
+        // client-side layout logic to keep in sync.
+        <nav class="mobile-tabbar">
+            <A href="/" exact=true attr:class="mobile-tab">
+                <GridIcon/>
+                "browse"
+            </A>
+            <A href="/upload" attr:class="mobile-tab">
+                <UploadIcon/>
+                "upload"
+            </A>
+            <A href="/settings" attr:class="mobile-tab">
+                <SettingsIcon/>
+                "settings"
+            </A>
+            <Suspense fallback=|| ()>
+                {move || {
+                    is_admin()
+                        .then(|| {
+                            view! {
+                                <A href="/admin" attr:class="mobile-tab">
+                                    <ShieldIcon/>
+                                    "admin"
+                                </A>
+                            }
+                        })
+                }}
+            </Suspense>
+        </nav>
     }
 }
 
