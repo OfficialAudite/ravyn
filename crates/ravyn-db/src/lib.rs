@@ -13,6 +13,9 @@ mod users;
 
 pub use error::DbError;
 
+use std::time::Duration;
+
+use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 #[derive(Clone)]
@@ -21,8 +24,25 @@ pub struct Db {
 }
 
 impl Db {
+    /// `sqlx`'s own defaults leave a connection idle for up to 10 minutes
+    /// before recycling it - long enough that a NAT, conntrack table, or
+    /// Docker's own network stack can silently drop it first without
+    /// either side noticing. The next query on that connection then hangs
+    /// waiting on a TCP-level timeout instead of failing fast, which is
+    /// exactly what a self-hosted instance sitting quiet overnight and
+    /// then "hanging" on the next visit looks like. Recycling well before
+    /// any of those infra-level timeouts would fire (a few minutes,
+    /// nothing this app's traffic pattern would ever notice) means a
+    /// request only ever gets a connection sqlx knows for certain is
+    /// fresh.
     pub async fn connect(database_url: &str) -> Result<Self, DbError> {
-        let pool = PgPool::connect(database_url).await?;
+        let pool = PgPoolOptions::new()
+            .min_connections(1)
+            .idle_timeout(Duration::from_secs(3 * 60))
+            .max_lifetime(Duration::from_secs(30 * 60))
+            .test_before_acquire(true)
+            .connect(database_url)
+            .await?;
         Ok(Self { pool })
     }
 
