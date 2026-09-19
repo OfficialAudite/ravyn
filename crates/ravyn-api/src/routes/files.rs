@@ -25,6 +25,46 @@ pub(super) fn thumbnail_key(id: FileId) -> String {
     format!("{}.avif", id.0)
 }
 
+/// Whether serving this content type as the direct response to a
+/// top-level navigation (someone opening the link itself, not an `<img>`/
+/// `<video>` embedding it) would let an uploader's own markup or script
+/// run as if it were part of this site. `content_type` comes straight
+/// from whatever the uploader's client declared at upload time
+/// (`save_uploaded_part`), so it's attacker-controlled: a file uploaded
+/// with `Content-Type: text/html` and a `<script>` body would otherwise
+/// execute with this origin's session cookie in scope for anyone who
+/// opens it directly. An `<img>`/`<video>`/`<audio>` element never
+/// executes script from what it loads regardless of type, so this only
+/// needs to guard the direct-navigation case, not image previews
+/// elsewhere in the app - an SVG still renders fine as an `<img>`.
+fn unsafe_for_inline_navigation(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "text/html" | "application/xhtml+xml" | "image/svg+xml" | "text/xml" | "application/xml"
+    )
+}
+
+/// Adds `X-Content-Type-Options: nosniff` always, and forces a download
+/// (`Content-Disposition: attachment`) instead of an inline response for
+/// anything `unsafe_for_inline_navigation` flags - see that function for
+/// why. Shared by every route that serves a file's original bytes
+/// (`GET /files/{id}`, and `/v/{id}`'s redirect ends up here too), so the
+/// decision only has to be made in one place.
+fn file_response_headers(content_type: &str, original_name: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+
+    if unsafe_for_inline_navigation(content_type) {
+        let safe_name = original_name.replace(['"', '\\', '\r', '\n'], "_");
+        let value = format!("attachment; filename=\"{safe_name}\"");
+        if let Ok(value) = value.parse() {
+            headers.insert(header::CONTENT_DISPOSITION, value);
+        }
+    }
+
+    headers
+}
+
 pub async fn get_file(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -62,7 +102,9 @@ pub async fn get_file(
         }
     };
 
-    ([(header::CONTENT_TYPE, file.content_type)], bytes).into_response()
+    let mut headers = file_response_headers(&file.content_type, &file.original_name);
+    headers.insert(header::CONTENT_TYPE, file.content_type.parse().unwrap());
+    (headers, bytes).into_response()
 }
 
 /// A small local-disk preview, generated at upload time for images. Kept

@@ -19,7 +19,7 @@ pub async fn init_chunked_upload(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!("{}/uploads", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({
@@ -63,7 +63,7 @@ pub async fn get_chunked_upload_status(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/uploads/{upload_id}", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -91,7 +91,7 @@ pub async fn complete_chunked_upload(upload_id: String) -> Result<String, Server
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!(
             "{}/uploads/{upload_id}/complete",
             ssr::api_base_url()
@@ -130,7 +130,7 @@ pub async fn cancel_chunked_upload(upload_id: String) -> Result<(), ServerFnErro
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .delete(format!("{}/uploads/{upload_id}", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()

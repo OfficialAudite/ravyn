@@ -10,7 +10,7 @@ pub async fn list_files() -> Result<Vec<FileSummary>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/files", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -51,7 +51,7 @@ pub async fn delete_file(id: String) -> Result<(), ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .delete(format!("{}/files/{id}", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -76,7 +76,7 @@ pub async fn move_file_to_folder(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/files/{id}/folder", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "folder_id": folder_id }))
@@ -99,7 +99,7 @@ pub async fn set_file_password(id: String, password: Option<String>) -> Result<(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/files/{id}/password", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "password": password }))
@@ -122,7 +122,7 @@ pub async fn rename_file(id: String, name: String) -> Result<(), ServerFnError> 
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/files/{id}/name", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "name": name }))
@@ -145,7 +145,7 @@ pub async fn set_file_expiry(id: String, preset: String) -> Result<(), ServerFnE
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/files/{id}/expiry", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "preset": preset }))
@@ -168,7 +168,7 @@ pub async fn set_file_tags(id: String, tags: Vec<String>) -> Result<(), ServerFn
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/files/{id}/tags", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "tags": tags }))

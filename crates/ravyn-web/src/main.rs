@@ -15,7 +15,12 @@ async fn main() {
     use ravyn_web::app::{shell, App};
     use tower_http::set_header::SetResponseHeaderLayer;
 
-    tracing_subscriber::fmt::init();
+    // See the matching comment in ravyn-api's main.rs.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
 
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
@@ -23,6 +28,7 @@ async fn main() {
     let routes = generate_route_list(App);
 
     let app = Router::new()
+        .route("/health", get(health))
         .route(
             "/api/*fn_name",
             get(leptos_axum::handle_server_fns).post(leptos_axum::handle_server_fns),
@@ -46,8 +52,72 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     tracing::info!("ravyn-web listening on {addr}");
     axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
+}
+
+/// See the matching function in ravyn-api's main.rs for why this exists.
+#[cfg(feature = "ssr")]
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("shutdown signal received, draining in-flight requests");
+}
+
+/// A readiness check, not just "the process is bound to a port": this
+/// service is only actually useful if it can reach `ravyn-api` too, since
+/// every server function and proxy route depends on it. Bounded by a
+/// short timeout so a hung upstream makes this fail fast rather than
+/// hang right along with it.
+#[cfg(feature = "ssr")]
+async fn health() -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    let api_base =
+        std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
+
+    let request = reqwest::Client::new()
+        .get(format!("{api_base}/health"))
+        .timeout(std::time::Duration::from_secs(3))
+        .send();
+
+    match request.await {
+        Ok(response) if response.status().is_success() => "ok".into_response(),
+        Ok(response) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            format!("api returned {}", response.status()),
+        )
+            .into_response(),
+        Err(err) => {
+            tracing::error!(%err, "health check: api unreachable");
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "api unreachable",
+            )
+                .into_response()
+        }
+    }
 }
 
 /// Kept identical to the same-named helper in `ravyn-api` — read the
@@ -234,14 +304,23 @@ async fn raw_proxy(
 
     let status = axum::http::StatusCode::from_u16(response.status().as_u16())
         .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
-    let content_type = response
-        .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .cloned();
 
+    // Forwarded as-is rather than re-decided here: `ravyn-api`'s `/files/{id}`
+    // already picked these based on the file's content type (nosniff always,
+    // plus a forced download for anything unsafe to open as a top-level
+    // navigation, e.g. an uploaded SVG or HTML file) - this proxy just needs
+    // to not silently drop them the way only forwarding Content-Type did.
     let mut headers = axum::http::HeaderMap::new();
-    if let Some(content_type) = content_type {
-        headers.insert(axum::http::header::CONTENT_TYPE, content_type);
+    for name in [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::CONTENT_DISPOSITION,
+    ] {
+        if let Some(value) = response.headers().get(&name) {
+            headers.insert(name, value.clone());
+        }
+    }
+    if let Some(value) = response.headers().get("x-content-type-options") {
+        headers.insert("x-content-type-options", value.clone());
     }
 
     let body = axum::body::Body::from_stream(response.bytes_stream());

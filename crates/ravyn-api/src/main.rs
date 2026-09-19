@@ -15,7 +15,16 @@ use time::OffsetDateTime;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // Unfiltered by default (`fmt::init()`) means every request-level
+    // `tracing::info!` sticks around in `docker logs` forever - fine for
+    // a quiet self-hosted instance, a lot less fine after months of
+    // continuous uptime with no rotation. `RUST_LOG=warn` (or `error`)
+    // trims that down without a redeploy.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
@@ -71,7 +80,46 @@ async fn main() {
 
     tracing::info!("listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap();
+}
+
+/// Resolves once Docker (or Ctrl+C locally) asks this process to stop.
+/// Without it, `axum::serve` never stops accepting new connections on its
+/// own, so a `docker stop`/redeploy sends SIGTERM straight to the process
+/// with nothing listening for it - the OS default for an unhandled
+/// SIGTERM is to kill it immediately, cutting off whatever request (an
+/// in-progress upload, most likely) happened to be mid-flight. Passing
+/// this to `with_graceful_shutdown` instead makes axum stop accepting new
+/// connections the moment the signal arrives but let already-in-flight
+/// ones finish, up to however long Docker's own stop timeout allows
+/// before it escalates to SIGKILL.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("shutdown signal received, draining in-flight requests");
 }
 
 /// Chooses where uploaded files themselves are stored. `STORAGE_BACKEND=s3`

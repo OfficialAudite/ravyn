@@ -15,7 +15,7 @@ pub async fn create_short_url(destination: String) -> Result<CreatedShortUrl, Se
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!("{}/short-urls", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "destination": destination }))
@@ -67,7 +67,7 @@ pub async fn list_short_urls() -> Result<Vec<ShortUrlInfo>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/short-urls", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -114,7 +114,7 @@ pub async fn delete_short_url(id: String) -> Result<(), ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .delete(format!("{}/short-urls/{id}", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
