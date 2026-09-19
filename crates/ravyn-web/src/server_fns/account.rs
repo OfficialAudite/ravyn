@@ -14,7 +14,7 @@ pub enum LoginResult {
 pub async fn login(username: String, password: String) -> Result<LoginResult, ServerFnError> {
     use crate::server_fns::ssr;
 
-    let mut request = reqwest::Client::new()
+    let mut request = ssr::http_client()
         .post(format!("{}/login", ssr::api_base_url()))
         .json(&serde_json::json!({ "username": username, "password": password }));
     if let Some(ip) = ssr::incoming_client_ip().await {
@@ -58,7 +58,7 @@ pub async fn login(username: String, password: String) -> Result<LoginResult, Se
 pub async fn login_totp(login_token: String, code: String) -> Result<(), ServerFnError> {
     use crate::server_fns::ssr;
 
-    let mut request = reqwest::Client::new()
+    let mut request = ssr::http_client()
         .post(format!("{}/login/totp", ssr::api_base_url()))
         .json(&serde_json::json!({ "login_token": login_token, "code": code }));
     if let Some(ip) = ssr::incoming_client_ip().await {
@@ -87,7 +87,7 @@ pub async fn logout() -> Result<(), ServerFnError> {
     use crate::server_fns::ssr;
 
     if let Some(cookie) = ssr::incoming_cookie().await {
-        let _ = reqwest::Client::new()
+        let _ = ssr::http_client()
             .post(format!("{}/logout", ssr::api_base_url()))
             .header("Cookie", cookie)
             .send()
@@ -112,7 +112,7 @@ pub struct RegistrationStatus {
 pub async fn get_registration_status() -> Result<RegistrationStatus, ServerFnError> {
     use crate::server_fns::ssr;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/registration-status", ssr::api_base_url()))
         .send()
         .await
@@ -132,7 +132,7 @@ pub async fn register(
 ) -> Result<(), ServerFnError> {
     use crate::server_fns::ssr;
 
-    let mut request = reqwest::Client::new()
+    let mut request = ssr::http_client()
         .post(format!("{}/register", ssr::api_base_url()))
         .json(&serde_json::json!({
             "username": username,
@@ -175,7 +175,7 @@ pub async fn me() -> Result<AccountInfo, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/me", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -203,7 +203,7 @@ pub async fn change_password(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/me/password", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({
@@ -239,7 +239,7 @@ pub async fn setup_totp() -> Result<TotpSetup, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!("{}/me/totp/setup", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -269,7 +269,7 @@ pub async fn confirm_totp(code: String) -> Result<Vec<String>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!("{}/me/totp/confirm", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "code": code }))
@@ -301,7 +301,7 @@ pub async fn disable_totp(password: String, code: String) -> Result<(), ServerFn
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!("{}/me/totp/disable", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "password": password, "code": code }))
@@ -338,7 +338,7 @@ pub async fn create_api_token(name: String) -> Result<CreatedApiToken, ServerFnE
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!("{}/api-tokens", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "name": name }))
@@ -396,7 +396,7 @@ pub async fn list_api_tokens() -> Result<Vec<ApiTokenInfo>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/api-tokens", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -421,7 +421,7 @@ pub async fn delete_api_token(id: String) -> Result<(), ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .delete(format!("{}/api-tokens/{id}", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -452,7 +452,7 @@ pub async fn get_embed_settings() -> Result<EmbedSettings, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/embed-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -477,7 +477,7 @@ pub async fn set_embed_settings(settings: EmbedSettings) -> Result<(), ServerFnE
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/embed-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&settings)
@@ -500,7 +500,7 @@ pub async fn get_webhook_url() -> Result<Option<String>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/webhook-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -531,7 +531,7 @@ pub async fn set_webhook_url(webhook_url: Option<String>) -> Result<(), ServerFn
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/webhook-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "webhook_url": webhook_url }))
@@ -567,7 +567,7 @@ pub async fn get_storage_info() -> Result<StorageInfo, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/storage-info", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -601,7 +601,7 @@ pub async fn get_instance_settings() -> Result<InstanceSettings, ServerFnError> 
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/instance-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -637,7 +637,7 @@ pub async fn set_instance_settings(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/instance-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({
@@ -671,7 +671,7 @@ pub async fn create_invite() -> Result<CreatedInvite, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!("{}/invites", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -703,7 +703,7 @@ pub async fn list_invites() -> Result<Vec<InviteInfo>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/invites", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -728,7 +728,7 @@ pub async fn delete_invite(id: String) -> Result<(), ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .delete(format!("{}/invites/{id}", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -761,7 +761,7 @@ pub async fn list_users() -> Result<Vec<AdminUserInfo>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/admin/users", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -789,7 +789,7 @@ pub async fn set_user_limit(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/admin/users/{id}/limit", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "max_storage_bytes": max_storage_bytes }))
@@ -812,7 +812,7 @@ pub async fn delete_user(id: String) -> Result<(), ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .delete(format!("{}/admin/users/{id}", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -857,7 +857,7 @@ pub async fn get_my_stats() -> Result<MyStats, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/me/stats", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -893,7 +893,7 @@ pub async fn get_admin_stats() -> Result<InstanceStats, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/admin/stats", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -924,7 +924,7 @@ pub async fn get_cost_settings() -> Result<CostSettings, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/admin/cost-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -952,7 +952,7 @@ pub async fn set_cost_settings(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/admin/cost-settings", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({
@@ -987,7 +987,7 @@ pub async fn list_activity() -> Result<Vec<ActivityLogEntry>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/admin/activity", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()

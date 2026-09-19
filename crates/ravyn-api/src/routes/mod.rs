@@ -9,8 +9,9 @@ pub use files::run_expiry_sweep;
 pub use uploads::run_chunked_upload_sweep;
 
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
     http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{delete, get, patch, post, put},
     Router,
 };
@@ -105,8 +106,24 @@ fn max_upload_bytes() -> usize {
         .saturating_mul(1024 * 1024)
 }
 
-async fn health() -> &'static str {
-    "ok"
+/// A readiness check, not just a liveness one: confirms the process can
+/// still round-trip a real query against Postgres, not just that it's
+/// running. Bounded by a short timeout of its own so a stuck pool
+/// (exactly the class of bug `Db::connect`'s own tuning guards against)
+/// makes this fail fast instead of hanging right along with everything
+/// else - the whole point of a health check a monitor can act on.
+async fn health(State(state): State<AppState>) -> Response {
+    match tokio::time::timeout(std::time::Duration::from_secs(3), state.db.ping()).await {
+        Ok(Ok(())) => "ok".into_response(),
+        Ok(Err(err)) => {
+            tracing::error!(%err, "health check: database ping failed");
+            (StatusCode::SERVICE_UNAVAILABLE, "database unreachable").into_response()
+        }
+        Err(_) => {
+            tracing::error!("health check: database ping timed out");
+            (StatusCode::SERVICE_UNAVAILABLE, "database timed out").into_response()
+        }
+    }
 }
 
 #[derive(Serialize)]

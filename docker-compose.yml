@@ -48,7 +48,8 @@ services:
     ports:
       - "3001:3001"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   db-data:

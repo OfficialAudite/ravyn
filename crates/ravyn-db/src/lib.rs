@@ -50,4 +50,14 @@ impl Db {
         sqlx::migrate!("./migrations").run(&self.pool).await?;
         Ok(())
     }
+
+    /// A cheap round trip against a real connection, for `/health` to
+    /// call - the difference between "the process is up" and "the
+    /// process can actually still talk to Postgres", which a plain
+    /// liveness check can't tell apart from the exact class of stale-pool
+    /// hang `connect`'s own tuning above is guarding against.
+    pub async fn ping(&self) -> Result<(), DbError> {
+        sqlx::query("select 1").execute(&self.pool).await?;
+        Ok(())
+    }
 }

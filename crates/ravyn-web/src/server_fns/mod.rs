@@ -62,6 +62,18 @@ pub(crate) mod ssr {
 
     use super::FileSummary;
 
+    /// One `reqwest::Client` shared by every server function, instead of
+    /// each of them building its own with `reqwest::Client::new()` - a
+    /// fresh client means a fresh connection pool, so every single call
+    /// paid for its own TCP handshake (and TLS handshake, for an https
+    /// `RAVYN_API_URL`) to `ravyn-api` instead of reusing a kept-alive
+    /// connection the way a normal HTTP client would.
+    pub fn http_client() -> &'static reqwest::Client {
+        static CLIENT: std::sync::LazyLock<reqwest::Client> =
+            std::sync::LazyLock::new(reqwest::Client::new);
+        &CLIENT
+    }
+
     /// Where `ravyn-web` reaches `ravyn-api` itself (e.g. `http://api:3000`
     /// inside docker-compose — not reachable from the browser).
     pub fn api_base_url() -> String {

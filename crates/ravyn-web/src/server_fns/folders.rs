@@ -19,7 +19,7 @@ pub async fn list_folders() -> Result<Vec<FolderSummary>, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .get(format!("{}/folders", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -44,7 +44,7 @@ pub async fn create_folder(name: String, password: Option<String>) -> Result<(),
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .post(format!("{}/folders", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "name": name, "password": password }))
@@ -67,7 +67,7 @@ pub async fn delete_folder(id: String) -> Result<(), ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .delete(format!("{}/folders/{id}", ssr::api_base_url()))
         .header("Cookie", cookie)
         .send()
@@ -92,7 +92,7 @@ pub async fn set_folder_password(
         .await
         .ok_or_else(|| ServerFnError::new("not authenticated"))?;
 
-    let response = reqwest::Client::new()
+    let response = ssr::http_client()
         .put(format!("{}/folders/{id}/password", ssr::api_base_url()))
         .header("Cookie", cookie)
         .json(&serde_json::json!({ "password": password }))
@@ -129,8 +129,7 @@ pub async fn get_shared_folder(
         files: Vec<ssr::ApiFileSummary>,
     }
 
-    let mut request =
-        reqwest::Client::new().get(format!("{}/folders/{id}/files", ssr::api_base_url()));
+    let mut request = ssr::http_client().get(format!("{}/folders/{id}/files", ssr::api_base_url()));
     if let Some(password) = &password {
         request = request.query(&[("password", password)]);
     }
