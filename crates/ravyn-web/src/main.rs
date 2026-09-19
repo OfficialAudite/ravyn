@@ -234,14 +234,23 @@ async fn raw_proxy(
 
     let status = axum::http::StatusCode::from_u16(response.status().as_u16())
         .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
-    let content_type = response
-        .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .cloned();
 
+    // Forwarded as-is rather than re-decided here: `ravyn-api`'s `/files/{id}`
+    // already picked these based on the file's content type (nosniff always,
+    // plus a forced download for anything unsafe to open as a top-level
+    // navigation, e.g. an uploaded SVG or HTML file) - this proxy just needs
+    // to not silently drop them the way only forwarding Content-Type did.
     let mut headers = axum::http::HeaderMap::new();
-    if let Some(content_type) = content_type {
-        headers.insert(axum::http::header::CONTENT_TYPE, content_type);
+    for name in [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::CONTENT_DISPOSITION,
+    ] {
+        if let Some(value) = response.headers().get(&name) {
+            headers.insert(name, value.clone());
+        }
+    }
+    if let Some(value) = response.headers().get("x-content-type-options") {
+        headers.insert("x-content-type-options", value.clone());
     }
 
     let body = axum::body::Body::from_stream(response.bytes_stream());
