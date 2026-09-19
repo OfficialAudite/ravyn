@@ -65,6 +65,49 @@ pub fn submit_input_form(input_id: &str) {
     }
 }
 
+/// Pulls the first image out of a clipboard paste (e.g. a screenshot copied
+/// straight from the OS, no save-to-disk step first) and copies it onto the
+/// file `<input>` with the given id, the same way `sync_dropped_files` does
+/// for a drag - the caller still decides afterward whether to submit
+/// plainly or chunk it. Returns `false` (and touches nothing) if the paste
+/// didn't contain an image, so a plain text paste elsewhere on the page
+/// isn't hijacked into an upload attempt.
+#[cfg(feature = "hydrate")]
+pub fn image_from_clipboard(ev: &web_sys::Event, input_id: &str) -> bool {
+    use wasm_bindgen::JsCast;
+    use web_sys::{ClipboardEvent, DataTransfer, HtmlInputElement};
+
+    (|| {
+        let ev = ev.dyn_ref::<ClipboardEvent>()?;
+        let items = ev.clipboard_data()?.items();
+        let mut found = None;
+        for i in 0..items.length() {
+            let item = items.get(i)?;
+            if item.kind() == "file" && item.type_().starts_with("image/") {
+                found = item.get_as_file().ok().flatten();
+                if found.is_some() {
+                    break;
+                }
+            }
+        }
+        let file = found?;
+
+        let data_transfer = DataTransfer::new().ok()?;
+        data_transfer.items().add_with_file(&file).ok()?;
+
+        let window = web_sys::window()?;
+        let document = window.document()?;
+        let input = document
+            .get_element_by_id(input_id)?
+            .dyn_into::<HtmlInputElement>()
+            .ok()?;
+
+        input.set_files(Some(&data_transfer.files()?));
+        Some(())
+    })()
+    .is_some()
+}
+
 /// Builds a synthetic text file out of pasted content and feeds it through
 /// the same `<input type=file>` a real drag-drop or file picker would use,
 /// then submits its form — reuses the entire upload pipeline (naming,

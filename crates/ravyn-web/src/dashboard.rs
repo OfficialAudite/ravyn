@@ -1,6 +1,8 @@
 use leptos::prelude::*;
 use leptos_router::components::{Outlet, A};
 
+#[cfg(feature = "hydrate")]
+use crate::browser::image_from_clipboard;
 use crate::browser::{
     copy_to_clipboard, paste_text_and_submit, submit_input_form, sync_dropped_files,
     upload_large_files,
@@ -520,6 +522,22 @@ fn Dropzone() -> impl IntoView {
             submit_input_form("file-input");
         }
     };
+
+    // A screenshot copied straight from the OS clipboard (no save-to-disk
+    // step) uploads the same way a dropped file does. Bound to `window`
+    // rather than the dropzone element itself, since a paste event targets
+    // whatever's focused, not whatever's hovered - the dropzone has
+    // nothing in it to focus. Leptos tears this listener down when the
+    // component unmounts. `web_sys` (and so the real `ClipboardEvent` type
+    // `image_from_clipboard` needs) is only ever a dependency under the
+    // `hydrate` feature, same reason every other browser-only helper in
+    // `browser.rs` is written the way it is.
+    #[cfg(feature = "hydrate")]
+    window_event_listener(leptos::ev::paste, move |ev| {
+        if image_from_clipboard(&ev, "file-input") {
+            submit_or_chunk();
+        }
+    });
 
     view! {
         <div
