@@ -1,6 +1,9 @@
 use leptos::prelude::*;
 use leptos_router::components::{Outlet, A};
+use leptos_router::hooks::use_query_map;
 
+#[cfg(feature = "hydrate")]
+use crate::browser::image_from_clipboard;
 use crate::browser::{
     copy_to_clipboard, paste_text_and_submit, submit_input_form, sync_dropped_files,
     upload_large_files,
@@ -521,6 +524,22 @@ fn Dropzone() -> impl IntoView {
         }
     };
 
+    // A screenshot copied straight from the OS clipboard (no save-to-disk
+    // step) uploads the same way a dropped file does. Bound to `window`
+    // rather than the dropzone element itself, since a paste event targets
+    // whatever's focused, not whatever's hovered - the dropzone has
+    // nothing in it to focus. Leptos tears this listener down when the
+    // component unmounts. `web_sys` (and so the real `ClipboardEvent` type
+    // `image_from_clipboard` needs) is only ever a dependency under the
+    // `hydrate` feature, same reason every other browser-only helper in
+    // `browser.rs` is written the way it is.
+    #[cfg(feature = "hydrate")]
+    window_event_listener(leptos::ev::paste, move |ev| {
+        if image_from_clipboard(&ev, "file-input") {
+            submit_or_chunk();
+        }
+    });
+
     view! {
         <div
             class="dropzone"
@@ -540,6 +559,28 @@ fn Dropzone() -> impl IntoView {
                 <RavenIcon class="raven"/>
                 <p class="dropzone-title">"drop files into the hoard"</p>
                 <p class="dropzone-hint">"or click to choose — multiple at once is fine"</p>
+                // Plain named form fields, not Leptos-tracked signals - the
+                // browser already includes whatever they're currently set
+                // to when the form submits, native `<form>` behavior. Has
+                // to come before `file-input` in the markup: the server
+                // reads these two fields off the multipart stream before
+                // it starts treating anything as a file to save, and a
+                // stream only ever goes one direction.
+                <div class="dropzone-options">
+                    <label for="compress-format">"compress images"</label>
+                    <select id="compress-format" name="compress_format">
+                        <option value="">"off"</option>
+                        <option value="jpeg">"JPEG"</option>
+                        <option value="avif">"AVIF"</option>
+                    </select>
+                    <input
+                        type="number"
+                        name="compress_quality"
+                        placeholder="quality (80)"
+                        min="1"
+                        max="100"
+                    />
+                </div>
                 <input
                     id="file-input"
                     type="file"
@@ -822,7 +863,43 @@ fn Browse(
     let folders_for_bulk = folders.clone();
     let files_for_modal = files.clone();
 
+    // Set by `upload_proxy`'s redirect (`/?duplicate_of=<id>`) when the
+    // file just uploaded turned out to be byte-identical to one this
+    // account already had - looked up against the list already fetched
+    // for this page rather than a separate request. `dismissed` rather
+    // than clearing the query param itself, since that'd need a
+    // history.replaceState round trip for what's just a one-off notice.
+    let duplicate_notice = {
+        let files = files.clone();
+        move || {
+            use_query_map()
+                .get()
+                .get("duplicate_of")
+                .and_then(|id| files.iter().find(|f| f.id == id).cloned())
+        }
+    };
+    let dismissed = RwSignal::new(false);
+
     view! {
+        {move || {
+            duplicate_notice()
+                .filter(|_| !dismissed.get())
+                .map(|file| {
+                    view! {
+                        <div class="duplicate-notice">
+                            <span>
+                                "you already have this exact file: "
+                                <a href=file.url.clone()>{file.original_name.clone()}</a>
+                                ", uploaded " {format_date(&file.created_at).to_string()}
+                                "."
+                            </span>
+                            <button class="icon-btn-sm" on:click=move |_| dismissed.set(true)>
+                                <CloseIcon/>
+                            </button>
+                        </div>
+                    }
+                })
+        }}
         <div class="workspace">
             <FolderSidebar folders=folders.clone() selected_folder actions/>
 
@@ -844,12 +921,14 @@ fn Browse(
                         })
                 }}
 
-                {move || {
-                    let visible = visible_files();
-                    if visible.is_empty() {
-                        let message = if files.is_empty() {
-                            view! {
-                                <p>
+                {
+                    let visible_files = visible_files.clone();
+                    move || {
+                        let visible = visible_files();
+                        if visible.is_empty() {
+                            let message = if files.is_empty() {
+                                view! {
+                                    <p>
                                     "nothing here yet — " <A href="/upload">"upload something"</A>
                                     " to get started."
                                 </p>
@@ -887,20 +966,30 @@ fn Browse(
                             </div>
                         }
                             .into_any()
+                        }
                     }
-                }}
+                }
             </div>
 
-            {move || {
-                opened_file
-                    .get()
-                    .and_then(|id| files_for_modal.iter().find(|f| f.id == id).cloned())
-                    .map(|file| {
-                        view! {
-                            <FileModal file folders=folders_for_modal.clone() actions opened_file />
-                        }
-                    })
-            }}
+            {
+                let visible_files = visible_files.clone();
+                move || {
+                    opened_file
+                        .get()
+                        .and_then(|id| files_for_modal.iter().find(|f| f.id == id).cloned())
+                        .map(|file| {
+                            view! {
+                                <FileModal
+                                    file
+                                    folders=folders_for_modal.clone()
+                                    actions
+                                    opened_file
+                                    visible_files=visible_files()
+                                />
+                            }
+                        })
+                }
+            }
         </div>
     }
 }
@@ -1100,6 +1189,36 @@ fn BulkActionsBar(
         select_mode.set(false);
     };
 
+    let delete_selected = move || {
+        for id in selected.get_untracked() {
+            actions.delete_file.dispatch(DeleteFile { id });
+        }
+        clear();
+    };
+
+    // Delete/Backspace deletes the current selection, same as the button
+    // below - skipped while a form field (most likely the search box,
+    // still usable during select mode) has focus, so backspacing out a
+    // search term doesn't also wipe out your files.
+    #[cfg(feature = "hydrate")]
+    window_event_listener(leptos::ev::keydown, move |ev| {
+        use wasm_bindgen::JsCast;
+
+        let is_form_field = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .is_some_and(|el| matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT"));
+        if is_form_field {
+            return;
+        }
+
+        if matches!(ev.key().as_str(), "Delete" | "Backspace")
+            && !selected.get_untracked().is_empty()
+        {
+            delete_selected();
+        }
+    });
+
     view! {
         <div class="bulk-actions-bar">
             <span class="bulk-actions-count">
@@ -1129,16 +1248,7 @@ fn BulkActionsBar(
                     })
                     .collect_view()}
             </select>
-            <button
-                type="button"
-                class="btn btn-ghost"
-                on:click=move |_| {
-                    for id in selected.get_untracked() {
-                        actions.delete_file.dispatch(DeleteFile { id });
-                    }
-                    clear();
-                }
-            >
+            <button type="button" class="btn btn-ghost" on:click=move |_| delete_selected()>
                 "delete selected"
             </button>
             <button type="button" class="btn btn-ghost" on:click=move |_| clear()>
@@ -1317,6 +1427,7 @@ fn FileModal(
     folders: Vec<FolderSummary>,
     actions: Actions,
     opened_file: RwSignal<Option<String>>,
+    visible_files: Vec<FileSummary>,
 ) -> impl IntoView {
     let (copied, set_copied) = signal(false);
     let (renaming, set_renaming) = signal(false);
@@ -1354,6 +1465,56 @@ fn FileModal(
     let short_hash = file.sha256.get(..12).unwrap_or(&file.sha256).to_string();
 
     let close = move |_| opened_file.set(None);
+
+    // Only actually read by the keydown listener below, which is
+    // hydrate-only - keeps the SSR build from warning about it.
+    #[cfg(not(feature = "hydrate"))]
+    let _ = &visible_files;
+
+    // Escape closes the modal; left/right step to the previous/next file
+    // in whatever's currently visible in the grid behind it (already
+    // filtered/sorted the same way), so browsing a batch of screenshots
+    // doesn't mean closing and reopening one at a time. Skipped while a
+    // form field inside the modal (rename, tags, password, ...) has
+    // focus, so the arrow keys still just move the text cursor there
+    // instead of jumping files out from under you. Leptos tears this
+    // listener down whenever the modal re-renders for a different file
+    // (including from this listener's own navigation) or closes.
+    #[cfg(feature = "hydrate")]
+    {
+        let current_id = file.id.clone();
+        window_event_listener(leptos::ev::keydown, move |ev| {
+            use wasm_bindgen::JsCast;
+
+            let is_form_field = ev
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                .is_some_and(|el| {
+                    matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT")
+                });
+            if is_form_field {
+                return;
+            }
+
+            match ev.key().as_str() {
+                "Escape" => opened_file.set(None),
+                "ArrowLeft" | "ArrowRight" => {
+                    let Some(index) = visible_files.iter().position(|f| f.id == current_id) else {
+                        return;
+                    };
+                    let next = if ev.key() == "ArrowLeft" {
+                        index.checked_sub(1)
+                    } else {
+                        (index + 1 < visible_files.len()).then_some(index + 1)
+                    };
+                    if let Some(next) = next {
+                        opened_file.set(Some(visible_files[next].id.clone()));
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
 
     let copy = move |_| {
         copy_to_clipboard(&copy_url);

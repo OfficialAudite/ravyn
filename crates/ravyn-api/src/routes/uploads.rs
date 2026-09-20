@@ -328,7 +328,14 @@ pub async fn complete_chunked_upload(
     let base_url = resolve_public_base_url(&state, &headers);
     notify_upload_webhook(&state, user.id, &file, &base_url).await;
 
-    Json(serde_json::json!({ "id": file.id.0 })).into_response()
+    let duplicate_of = state
+        .db
+        .find_duplicate_for_owner(user.id, &file.sha256, file.id)
+        .await
+        .unwrap_or_default()
+        .map(|existing| existing.id.0);
+
+    Json(serde_json::json!({ "id": file.id.0, "duplicate_of": duplicate_of })).into_response()
 }
 
 pub async fn cancel_chunked_upload(

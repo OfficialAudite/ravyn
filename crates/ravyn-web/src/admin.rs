@@ -3,9 +3,10 @@ use leptos::prelude::*;
 use crate::format::{format_date, format_size, format_type_breakdown, EXPIRY_PRESETS};
 use crate::icons::TrashIcon;
 use crate::server_fns::{
-    get_admin_stats, get_cost_settings, get_instance_settings, get_storage_info, list_activity,
-    list_invites, list_users, AdminUserInfo, CostSettings, CreateInvite, DeleteInvite, DeleteUser,
-    InstanceSettings, InviteInfo, SetCostSettings, SetInstanceSettings, SetUserLimit,
+    get_admin_stats, get_compression_settings, get_cost_settings, get_instance_settings,
+    get_storage_info, list_activity, list_invites, list_users, AdminUserInfo, CompressionSettings,
+    CostSettings, CreateInvite, DeleteInvite, DeleteUser, InstanceSettings, InviteInfo,
+    SetCompressionSettings, SetCostSettings, SetInstanceSettings, SetUserLimit,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,6 +87,7 @@ fn AdminTabs() -> impl IntoView {
                     <NamingSchemeSection/>
                     <ExpirySection/>
                     <ExifSection/>
+                    <CompressionSection/>
                     <StorageSection/>
                 }
                     .into_any()
@@ -700,6 +702,118 @@ fn ExifForm(
             </button>
             {move || {
                 exif_action
+                    .value()
+                    .get()
+                    .map(|result| match result {
+                        Ok(_) => view! { <p class="settings-hint">"saved."</p> }.into_any(),
+                        Err(err) => view! { <p class="form-error">{err.to_string()}</p> }.into_any(),
+                    })
+            }}
+        </form>
+    }
+}
+
+/// A real size/quality trade-off (see `ravyn_core::ImageCompressionFormat`),
+/// so this stays off unless an admin opts in here - unlike EXIF stripping
+/// just above, which is free.
+#[component]
+fn CompressionSection() -> impl IntoView {
+    let compression_action = ServerAction::<SetCompressionSettings>::new();
+    let settings = Resource::new(
+        move || compression_action.version().get(),
+        |_| get_compression_settings(),
+    );
+
+    view! {
+        <div class="settings-section">
+            <h3>"image compression"</h3>
+            <p class="settings-hint">
+                "re-encode uploaded images to shrink them, at the cost of some quality - off by "
+                "default. can also be set per upload from the upload page, which overrides this."
+            </p>
+            <Suspense fallback=|| view! { <p class="settings-hint">"loading..."</p> }>
+                {move || {
+                    settings
+                        .get()
+                        .map(|result| match result {
+                            Ok(settings) => {
+                                view! { <CompressionForm settings compression_action /> }.into_any()
+                            }
+                            Err(_) => {
+                                view! {
+                                    <p class="form-error">"failed to load compression settings"</p>
+                                }
+                                    .into_any()
+                            }
+                        })
+                }}
+            </Suspense>
+        </div>
+    }
+}
+
+#[component]
+fn CompressionForm(
+    settings: CompressionSettings,
+    compression_action: ServerAction<SetCompressionSettings>,
+) -> impl IntoView {
+    let (format, set_format) = signal(settings.format.unwrap_or_default());
+    let (quality_input, set_quality_input) = signal(
+        settings
+            .quality
+            .map(|quality| quality.to_string())
+            .unwrap_or_default(),
+    );
+
+    view! {
+        <form
+            class="embed-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                let format_value = format.get();
+                let format_value = (!format_value.is_empty()).then_some(format_value);
+                let quality = quality_input.get().trim().parse::<i64>().ok();
+                compression_action
+                    .dispatch(SetCompressionSettings {
+                        format: format_value,
+                        quality,
+                    });
+            }
+        >
+            <div class="field">
+                <label for="compression-format">"format"</label>
+                <select
+                    id="compression-format"
+                    class="folder-select"
+                    on:change=move |ev| set_format.set(event_target_value(&ev))
+                >
+                    <option value="" selected=move || format.get().is_empty()>
+                        "off"
+                    </option>
+                    <option value="jpeg" selected=move || format.get() == "jpeg">
+                        "JPEG"
+                    </option>
+                    <option value="avif" selected=move || format.get() == "avif">
+                        "AVIF"
+                    </option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="compression-quality">"quality (1-100, default 80)"</label>
+                <input
+                    id="compression-quality"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="80"
+                    prop:value=move || quality_input.get()
+                    on:input=move |ev| set_quality_input.set(event_target_value(&ev))
+                />
+            </div>
+            <button type="submit" class="btn btn-primary">
+                "save"
+            </button>
+            {move || {
+                compression_action
                     .value()
                     .get()
                     .map(|result| match result {

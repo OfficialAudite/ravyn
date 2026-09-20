@@ -190,6 +190,54 @@ fn strip_exif(bytes: axum::body::Bytes) -> axum::body::Bytes {
     image.encoder().bytes()
 }
 
+/// Re-encodes a decoded image into `format` at `quality` (1-100), lossy -
+/// this is an explicit size/quality trade-off an admin or uploader opted
+/// into (see `ravyn_core::ImageCompressionFormat`'s own docs for why only
+/// these two formats), not something applied silently. `None` on any
+/// failure to decode or encode, left to the caller to fall back to the
+/// original bytes untouched.
+fn compress_image(
+    bytes: &[u8],
+    format: ravyn_core::ImageCompressionFormat,
+    quality: u8,
+) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let mut out = Vec::new();
+
+    match format {
+        ravyn_core::ImageCompressionFormat::Jpeg => {
+            // JPEG has no alpha channel - dropping it here rather than
+            // letting the encoder reject (or silently mangle) an RGBA
+            // source is the same "flatten transparency" behavior any
+            // other PNG-to-JPEG conversion has to make.
+            let rgb = image::DynamicImage::ImageRgb8(img.to_rgb8());
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
+            rgb.write_with_encoder(encoder).ok()?;
+        }
+        ravyn_core::ImageCompressionFormat::Avif => {
+            // Same encoder `generate_thumbnail` already uses - speed 6 is
+            // that function's own middle-of-the-road choice, reused here
+            // for the same reason: fast enough not to make an upload feel
+            // like it hung, without giving up much compression for it.
+            let encoder =
+                image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut out, 6, quality);
+            img.write_with_encoder(encoder).ok()?;
+        }
+    }
+
+    Some(out)
+}
+
+/// Swaps (or adds) `name`'s extension - used when compression changes a
+/// file's actual format, so a renamed-in-place "screenshot.png" that's
+/// now really a JPEG doesn't keep a misleading extension.
+fn replace_extension(name: &str, new_extension: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, _)) => format!("{stem}.{new_extension}"),
+        None => format!("{name}.{new_extension}"),
+    }
+}
+
 /// One field's worth of a multipart upload, saved. Pulled out of
 /// `upload_file` so it can be called once per part — the web UI's dropzone
 /// sends one request with several parts when you drop multiple files at
@@ -205,6 +253,8 @@ async fn save_uploaded_part(
     state: &AppState,
     owner_id: ravyn_core::UserId,
     field: axum::extract::multipart::Field<'_>,
+    compress_format_override: Option<Option<ravyn_core::ImageCompressionFormat>>,
+    compress_quality_override: Option<u8>,
 ) -> Result<File, (StatusCode, String)> {
     let uploaded_name = field.file_name().unwrap_or("upload").to_string();
     let content_type = field
@@ -236,6 +286,26 @@ async fn save_uploaded_part(
         .map(|duration| OffsetDateTime::now_utc() + duration);
 
     if content_type.starts_with("image/") {
+        // An explicit per-upload override always wins, including an
+        // explicit "off" (`Some(None)`, see the field-parsing comment
+        // above for why that's distinct from no override at all);
+        // otherwise fall back to whatever the instance's own default is
+        // (which may itself be "off"). A quality on its own with no
+        // format does nothing, same as the reverse: both are meaningless
+        // alone.
+        let compression = match compress_format_override {
+            Some(Some(format)) => Some((format, compress_quality_override.unwrap_or(80))),
+            Some(None) => None,
+            None => {
+                let (format, quality) = state
+                    .db
+                    .get_compression_settings()
+                    .await
+                    .unwrap_or((None, None));
+                format.map(|format| (format, quality.map(ravyn_core::clamp_quality).unwrap_or(80)))
+            }
+        };
+
         save_buffered_part(
             state,
             owner_id,
@@ -243,6 +313,7 @@ async fn save_uploaded_part(
             original_name,
             content_type,
             expires_at,
+            compression,
         )
         .await
     } else {
@@ -265,6 +336,7 @@ async fn save_buffered_part(
     original_name: String,
     content_type: String,
     expires_at: Option<OffsetDateTime>,
+    compression: Option<(ravyn_core::ImageCompressionFormat, u8)>,
 ) -> Result<File, (StatusCode, String)> {
     let bytes = field
         .bytes()
@@ -304,6 +376,24 @@ async fn save_buffered_part(
         strip_exif(bytes)
     } else {
         bytes
+    };
+
+    // Same quota reasoning as stripping above: a lossy re-encode only
+    // ever shrinks a real photo/screenshot, so there's nothing to
+    // re-check. Best-effort like every other image transform on this
+    // path - a source `image` can't decode (an animated GIF, a format
+    // outside what this build supports) uploads untouched rather than
+    // failing over what's an optional size trade-off to begin with.
+    let (bytes, content_type, original_name) = match compression {
+        Some((format, quality)) => match compress_image(&bytes, format, quality) {
+            Some(compressed) => (
+                compressed.into(),
+                format.content_type().to_string(),
+                replace_extension(&original_name, format.extension()),
+            ),
+            None => (bytes, content_type, original_name),
+        },
+        None => (bytes, content_type, original_name),
     };
 
     let sha256 = hex::encode(Sha256::digest(&bytes));
@@ -511,6 +601,11 @@ pub(super) async fn notify_upload_webhook(
 struct UploadOutcome {
     name: String,
     result: Result<Uuid, (StatusCode, String)>,
+    /// The id of an existing file this owner already has with identical
+    /// content, if any - set independently of `result`'s own success,
+    /// since the new upload is still saved either way, this is just a
+    /// heads-up.
+    duplicate_of: Option<Uuid>,
 }
 
 #[derive(serde::Serialize)]
@@ -518,6 +613,7 @@ struct UploadOutcomeJson {
     name: String,
     id: Option<Uuid>,
     error: Option<String>,
+    duplicate_of: Option<Uuid>,
 }
 
 impl From<&UploadOutcome> for UploadOutcomeJson {
@@ -527,11 +623,13 @@ impl From<&UploadOutcome> for UploadOutcomeJson {
                 name: outcome.name.clone(),
                 id: Some(*id),
                 error: None,
+                duplicate_of: outcome.duplicate_of,
             },
             Err((_, message)) => UploadOutcomeJson {
                 name: outcome.name.clone(),
                 id: None,
                 error: Some(message.clone()),
+                duplicate_of: None,
             },
         }
     }
@@ -559,6 +657,25 @@ pub async fn upload_file(
     let base_url = resolve_public_base_url(&state, &headers);
     let mut outcomes = Vec::new();
 
+    // Set by two optional, plain form fields (`compress_format`/
+    // `compress_quality`) alongside the file(s) in the same multipart
+    // body - the dropzone form places them before its file input so they
+    // arrive first, and that's the only ordering `Multipart::next_field`
+    // gives any field a chance to be read before the "file" fields that
+    // need it, so an API/ShareX client sending its own multipart body
+    // needs to do the same.
+    //
+    // `compress_format` is deliberately a *double* Option: the dropzone's
+    // `<select>` always sends this field, defaulting to an empty value
+    // for its "off" option, and that has to mean "explicitly off" rather
+    // than silently falling back to the instance default - otherwise
+    // turning the dropdown to "off" while an admin default is set
+    // wouldn't actually do anything. `None` (the field never arrived at
+    // all, the shape a bare API/ShareX request without this field takes)
+    // is the only case that still falls back to the instance default.
+    let mut compress_format: Option<Option<ravyn_core::ImageCompressionFormat>> = None;
+    let mut compress_quality = None;
+
     loop {
         let field = match multipart.next_field().await {
             Ok(Some(field)) => field,
@@ -572,9 +689,38 @@ pub async fn upload_file(
             }
         };
 
+        match field.name() {
+            Some("compress_format") => {
+                if let Ok(value) = field.text().await {
+                    compress_format = Some(ravyn_core::ImageCompressionFormat::parse(value.trim()));
+                }
+                continue;
+            }
+            Some("compress_quality") => {
+                if let Ok(value) = field.text().await {
+                    compress_quality = value
+                        .trim()
+                        .parse::<i64>()
+                        .ok()
+                        .map(ravyn_core::clamp_quality);
+                }
+                continue;
+            }
+            _ => {}
+        }
+
         let name = field.file_name().unwrap_or("upload").to_string();
-        let saved = save_uploaded_part(&state, user.id, field).await;
+        let saved =
+            save_uploaded_part(&state, user.id, field, compress_format, compress_quality).await;
+        let mut duplicate_of = None;
         if let Ok(file) = &saved {
+            duplicate_of = state
+                .db
+                .find_duplicate_for_owner(user.id, &file.sha256, file.id)
+                .await
+                .unwrap_or_default()
+                .map(|existing| existing.id.0);
+
             let _ = state
                 .db
                 .log_activity(
@@ -597,7 +743,11 @@ pub async fn upload_file(
             });
         }
         let result = saved.map(|file| file.id.0);
-        outcomes.push(UploadOutcome { name, result });
+        outcomes.push(UploadOutcome {
+            name,
+            result,
+            duplicate_of,
+        });
     }
 
     if outcomes.is_empty() {
@@ -606,7 +756,11 @@ pub async fn upload_file(
 
     if let [only] = outcomes.as_slice() {
         return match &only.result {
-            Ok(id) => Json(serde_json::json!({ "id": id })).into_response(),
+            // `duplicate_of` is a new field alongside `id`, not a
+            // replacement for it - a ShareX config extracting `{json:id}`
+            // keeps working unchanged, it just never looks at this one.
+            Ok(id) => Json(serde_json::json!({ "id": id, "duplicate_of": only.duplicate_of }))
+                .into_response(),
             Err((status, message)) => (*status, message.clone()).into_response(),
         };
     }

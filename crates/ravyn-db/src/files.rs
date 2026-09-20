@@ -83,6 +83,32 @@ impl Db {
         Ok(rows.into_iter().map(File::from).collect())
     }
 
+    /// The oldest other file this owner already has with the same content
+    /// (`sha256` collisions are astronomically unlikely to be anything but
+    /// a byte-identical file) - "oldest" so pointing someone back at a
+    /// duplicate always lands on the original, not whichever copy happens
+    /// to be newest. Scoped to `owner_id` deliberately: telling one user
+    /// that another user already has this exact file would leak the fact
+    /// that file exists on the instance at all.
+    pub async fn find_duplicate_for_owner(
+        &self,
+        owner_id: UserId,
+        sha256: &str,
+        exclude_id: FileId,
+    ) -> Result<Option<File>, DbError> {
+        let row = sqlx::query_as::<_, FileRow>(
+            "select * from files where owner_id = $1 and sha256 = $2 and id != $3
+             order by created_at asc limit 1",
+        )
+        .bind(owner_id.0)
+        .bind(sha256)
+        .bind(exclude_id.0)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(File::from))
+    }
+
     pub async fn count_files_for_owner(&self, owner_id: UserId) -> Result<i64, DbError> {
         let count: i64 = sqlx::query_scalar("select count(*) from files where owner_id = $1")
             .bind(owner_id.0)

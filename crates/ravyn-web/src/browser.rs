@@ -65,6 +65,49 @@ pub fn submit_input_form(input_id: &str) {
     }
 }
 
+/// Pulls the first image out of a clipboard paste (e.g. a screenshot copied
+/// straight from the OS, no save-to-disk step first) and copies it onto the
+/// file `<input>` with the given id, the same way `sync_dropped_files` does
+/// for a drag - the caller still decides afterward whether to submit
+/// plainly or chunk it. Returns `false` (and touches nothing) if the paste
+/// didn't contain an image, so a plain text paste elsewhere on the page
+/// isn't hijacked into an upload attempt.
+#[cfg(feature = "hydrate")]
+pub fn image_from_clipboard(ev: &web_sys::Event, input_id: &str) -> bool {
+    use wasm_bindgen::JsCast;
+    use web_sys::{ClipboardEvent, DataTransfer, HtmlInputElement};
+
+    (|| {
+        let ev = ev.dyn_ref::<ClipboardEvent>()?;
+        let items = ev.clipboard_data()?.items();
+        let mut found = None;
+        for i in 0..items.length() {
+            let item = items.get(i)?;
+            if item.kind() == "file" && item.type_().starts_with("image/") {
+                found = item.get_as_file().ok().flatten();
+                if found.is_some() {
+                    break;
+                }
+            }
+        }
+        let file = found?;
+
+        let data_transfer = DataTransfer::new().ok()?;
+        data_transfer.items().add_with_file(&file).ok()?;
+
+        let window = web_sys::window()?;
+        let document = window.document()?;
+        let input = document
+            .get_element_by_id(input_id)?
+            .dyn_into::<HtmlInputElement>()
+            .ok()?;
+
+        input.set_files(Some(&data_transfer.files()?));
+        Some(())
+    })()
+    .is_some()
+}
+
 /// Builds a synthetic text file out of pasted content and feeds it through
 /// the same `<input type=file>` a real drag-drop or file picker would use,
 /// then submits its form — reuses the entire upload pipeline (naming,
@@ -162,20 +205,27 @@ pub fn upload_large_files(
 
         error.set(None);
         leptos::task::spawn_local(async move {
+            let mut duplicate_of = None;
             for i in 0..count {
                 let Some(file) = list.get(i) else { continue };
                 uploading_name.set(Some(file.name()));
                 progress.set((0, file.size() as u32));
 
-                if let Err(err) = upload_one_large_file(&file, progress).await {
-                    error.set(Some(err));
-                    uploading_name.set(None);
-                    return;
+                match upload_one_large_file(&file, progress).await {
+                    Ok(found) => duplicate_of = duplicate_of.or(found),
+                    Err(err) => {
+                        error.set(Some(err));
+                        uploading_name.set(None);
+                        return;
+                    }
                 }
             }
 
             uploading_name.set(None);
-            navigate_to("/");
+            match duplicate_of {
+                Some(id) => navigate_to(&format!("/?duplicate_of={id}")),
+                None => navigate_to("/"),
+            }
         });
 
         true
@@ -192,7 +242,7 @@ pub fn upload_large_files(
 async fn upload_one_large_file(
     file: &web_sys::File,
     progress: RwSignal<(u32, u32)>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let init =
         crate::server_fns::init_chunked_upload(file.name(), file.type_(), file.size() as i64)
             .await
@@ -228,11 +278,11 @@ async fn upload_one_large_file(
         progress.set((offset, total_size));
     }
 
-    crate::server_fns::complete_chunked_upload(init.upload_id)
+    let completed = crate::server_fns::complete_chunked_upload(init.upload_id)
         .await
         .map_err(|err| err.to_string())?;
 
-    Ok(())
+    Ok(completed.duplicate_of)
 }
 
 #[cfg(feature = "hydrate")]

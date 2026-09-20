@@ -971,6 +971,69 @@ pub async fn set_cost_settings(
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompressionSettings {
+    pub format: Option<String>,
+    pub quality: Option<i64>,
+}
+
+#[server]
+pub async fn get_compression_settings() -> Result<CompressionSettings, ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = ssr::http_client()
+        .get(format!(
+            "{}/admin/compression-settings",
+            ssr::api_base_url()
+        ))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("not authorized"));
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))
+}
+
+#[server]
+pub async fn set_compression_settings(
+    format: Option<String>,
+    quality: Option<i64>,
+) -> Result<(), ServerFnError> {
+    use crate::server_fns::ssr;
+
+    let cookie = ssr::incoming_cookie()
+        .await
+        .ok_or_else(|| ServerFnError::new("not authenticated"))?;
+
+    let response = ssr::http_client()
+        .put(format!(
+            "{}/admin/compression-settings",
+            ssr::api_base_url()
+        ))
+        .header("Cookie", cookie)
+        .json(&serde_json::json!({ "format": format, "quality": quality }))
+        .send()
+        .await
+        .map_err(|err| ServerFnError::new(err.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ServerFnError::new("failed to save compression settings"));
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActivityLogEntry {
     pub id: String,
     pub username: String,
