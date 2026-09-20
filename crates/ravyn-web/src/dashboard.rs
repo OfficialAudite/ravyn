@@ -568,7 +568,7 @@ fn Dropzone() -> impl IntoView {
                 // stream only ever goes one direction.
                 <div class="dropzone-options">
                     <label for="compress-format">"compress images"</label>
-                    <select id="compress-format" name="compress_format">
+                    <select id="compress-format" name="compress_format" class="folder-select">
                         <option value="">"off"</option>
                         <option value="jpeg">"JPEG"</option>
                         <option value="avif">"AVIF"</option>
