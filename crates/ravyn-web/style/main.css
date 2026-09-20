@@ -446,6 +446,25 @@ input[type="password"]:focus {
   border-bottom-color: var(--accent);
 }
 
+/* duplicate-upload notice -------------------------------------------------- */
+
+.duplicate-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--hairline-bright);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+}
+
+.duplicate-notice a {
+  color: var(--accent);
+}
+
 /* workspace: folder sidebar + main content ------------------------------- */
 
 .workspace {

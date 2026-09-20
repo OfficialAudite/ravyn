@@ -7,6 +7,14 @@ pub struct ChunkedUploadInit {
     pub chunk_size: u32,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChunkedUploadComplete {
+    pub id: String,
+    /// Set when this upload turned out to be byte-identical to a file the
+    /// account already had - see `ravyn_db::find_duplicate_for_owner`.
+    pub duplicate_of: Option<String>,
+}
+
 #[server]
 pub async fn init_chunked_upload(
     original_name: String,
@@ -84,7 +92,9 @@ pub async fn get_chunked_upload_status(
 /// upload would - the dropzone treats both paths' results the same way
 /// once this resolves.
 #[server]
-pub async fn complete_chunked_upload(upload_id: String) -> Result<String, ServerFnError> {
+pub async fn complete_chunked_upload(
+    upload_id: String,
+) -> Result<ChunkedUploadComplete, ServerFnError> {
     use crate::server_fns::ssr;
 
     let cookie = ssr::incoming_cookie()
@@ -110,16 +120,10 @@ pub async fn complete_chunked_upload(upload_id: String) -> Result<String, Server
         }));
     }
 
-    #[derive(Deserialize)]
-    struct CompleteResponse {
-        id: String,
-    }
-
-    let body: CompleteResponse = response
+    response
         .json()
         .await
-        .map_err(|err| ServerFnError::new(err.to_string()))?;
-    Ok(body.id)
+        .map_err(|err| ServerFnError::new(err.to_string()))
 }
 
 #[server]

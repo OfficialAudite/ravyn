@@ -176,7 +176,38 @@ async fn upload_proxy(
 
     match request.send().await {
         Ok(response) if response.status().is_success() => {
-            axum::response::Redirect::to("/").into_response()
+            // `/files`' response carries a `duplicate_of` id (single-file
+            // shape: `{"id":..,"duplicate_of":..}`, multi-file: an array of
+            // that shape) whenever the upload turned out to be
+            // byte-identical to a file this account already had. Riding it
+            // along on the redirect's query string, rather than reading it
+            // client-side, means the notice on `/` works the same whether
+            // or not JS ever ran - same reason this whole path is a plain
+            // form POST and not a fetch call to begin with.
+            let duplicate_of = response
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|body| {
+                    body.get("duplicate_of")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            body.as_array()?.iter().find_map(|entry| {
+                                entry
+                                    .get("duplicate_of")
+                                    .and_then(|value| value.as_str())
+                                    .map(str::to_string)
+                            })
+                        })
+                });
+
+            match duplicate_of {
+                Some(id) => {
+                    axum::response::Redirect::to(&format!("/?duplicate_of={id}")).into_response()
+                }
+                None => axum::response::Redirect::to("/").into_response(),
+            }
         }
         _ => (axum::http::StatusCode::BAD_GATEWAY, "upload failed").into_response(),
     }

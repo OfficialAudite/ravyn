@@ -511,6 +511,11 @@ pub(super) async fn notify_upload_webhook(
 struct UploadOutcome {
     name: String,
     result: Result<Uuid, (StatusCode, String)>,
+    /// The id of an existing file this owner already has with identical
+    /// content, if any - set independently of `result`'s own success,
+    /// since the new upload is still saved either way, this is just a
+    /// heads-up.
+    duplicate_of: Option<Uuid>,
 }
 
 #[derive(serde::Serialize)]
@@ -518,6 +523,7 @@ struct UploadOutcomeJson {
     name: String,
     id: Option<Uuid>,
     error: Option<String>,
+    duplicate_of: Option<Uuid>,
 }
 
 impl From<&UploadOutcome> for UploadOutcomeJson {
@@ -527,11 +533,13 @@ impl From<&UploadOutcome> for UploadOutcomeJson {
                 name: outcome.name.clone(),
                 id: Some(*id),
                 error: None,
+                duplicate_of: outcome.duplicate_of,
             },
             Err((_, message)) => UploadOutcomeJson {
                 name: outcome.name.clone(),
                 id: None,
                 error: Some(message.clone()),
+                duplicate_of: None,
             },
         }
     }
@@ -574,7 +582,15 @@ pub async fn upload_file(
 
         let name = field.file_name().unwrap_or("upload").to_string();
         let saved = save_uploaded_part(&state, user.id, field).await;
+        let mut duplicate_of = None;
         if let Ok(file) = &saved {
+            duplicate_of = state
+                .db
+                .find_duplicate_for_owner(user.id, &file.sha256, file.id)
+                .await
+                .unwrap_or_default()
+                .map(|existing| existing.id.0);
+
             let _ = state
                 .db
                 .log_activity(
@@ -597,7 +613,11 @@ pub async fn upload_file(
             });
         }
         let result = saved.map(|file| file.id.0);
-        outcomes.push(UploadOutcome { name, result });
+        outcomes.push(UploadOutcome {
+            name,
+            result,
+            duplicate_of,
+        });
     }
 
     if outcomes.is_empty() {
@@ -606,7 +626,11 @@ pub async fn upload_file(
 
     if let [only] = outcomes.as_slice() {
         return match &only.result {
-            Ok(id) => Json(serde_json::json!({ "id": id })).into_response(),
+            // `duplicate_of` is a new field alongside `id`, not a
+            // replacement for it - a ShareX config extracting `{json:id}`
+            // keeps working unchanged, it just never looks at this one.
+            Ok(id) => Json(serde_json::json!({ "id": id, "duplicate_of": only.duplicate_of }))
+                .into_response(),
             Err((status, message)) => (*status, message.clone()).into_response(),
         };
     }

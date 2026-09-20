@@ -205,20 +205,27 @@ pub fn upload_large_files(
 
         error.set(None);
         leptos::task::spawn_local(async move {
+            let mut duplicate_of = None;
             for i in 0..count {
                 let Some(file) = list.get(i) else { continue };
                 uploading_name.set(Some(file.name()));
                 progress.set((0, file.size() as u32));
 
-                if let Err(err) = upload_one_large_file(&file, progress).await {
-                    error.set(Some(err));
-                    uploading_name.set(None);
-                    return;
+                match upload_one_large_file(&file, progress).await {
+                    Ok(found) => duplicate_of = duplicate_of.or(found),
+                    Err(err) => {
+                        error.set(Some(err));
+                        uploading_name.set(None);
+                        return;
+                    }
                 }
             }
 
             uploading_name.set(None);
-            navigate_to("/");
+            match duplicate_of {
+                Some(id) => navigate_to(&format!("/?duplicate_of={id}")),
+                None => navigate_to("/"),
+            }
         });
 
         true
@@ -235,7 +242,7 @@ pub fn upload_large_files(
 async fn upload_one_large_file(
     file: &web_sys::File,
     progress: RwSignal<(u32, u32)>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let init =
         crate::server_fns::init_chunked_upload(file.name(), file.type_(), file.size() as i64)
             .await
@@ -271,11 +278,11 @@ async fn upload_one_large_file(
         progress.set((offset, total_size));
     }
 
-    crate::server_fns::complete_chunked_upload(init.upload_id)
+    let completed = crate::server_fns::complete_chunked_upload(init.upload_id)
         .await
         .map_err(|err| err.to_string())?;
 
-    Ok(())
+    Ok(completed.duplicate_of)
 }
 
 #[cfg(feature = "hydrate")]

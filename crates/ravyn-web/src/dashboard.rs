@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 use leptos_router::components::{Outlet, A};
+use leptos_router::hooks::use_query_map;
 
 #[cfg(feature = "hydrate")]
 use crate::browser::image_from_clipboard;
@@ -840,7 +841,43 @@ fn Browse(
     let folders_for_bulk = folders.clone();
     let files_for_modal = files.clone();
 
+    // Set by `upload_proxy`'s redirect (`/?duplicate_of=<id>`) when the
+    // file just uploaded turned out to be byte-identical to one this
+    // account already had - looked up against the list already fetched
+    // for this page rather than a separate request. `dismissed` rather
+    // than clearing the query param itself, since that'd need a
+    // history.replaceState round trip for what's just a one-off notice.
+    let duplicate_notice = {
+        let files = files.clone();
+        move || {
+            use_query_map()
+                .get()
+                .get("duplicate_of")
+                .and_then(|id| files.iter().find(|f| f.id == id).cloned())
+        }
+    };
+    let dismissed = RwSignal::new(false);
+
     view! {
+        {move || {
+            duplicate_notice()
+                .filter(|_| !dismissed.get())
+                .map(|file| {
+                    view! {
+                        <div class="duplicate-notice">
+                            <span>
+                                "you already have this exact file: "
+                                <a href=file.url.clone()>{file.original_name.clone()}</a>
+                                ", uploaded " {format_date(&file.created_at).to_string()}
+                                "."
+                            </span>
+                            <button class="icon-btn-sm" on:click=move |_| dismissed.set(true)>
+                                <CloseIcon/>
+                            </button>
+                        </div>
+                    }
+                })
+        }}
         <div class="workspace">
             <FolderSidebar folders=folders.clone() selected_folder actions/>
 
