@@ -899,12 +899,14 @@ fn Browse(
                         })
                 }}
 
-                {move || {
-                    let visible = visible_files();
-                    if visible.is_empty() {
-                        let message = if files.is_empty() {
-                            view! {
-                                <p>
+                {
+                    let visible_files = visible_files.clone();
+                    move || {
+                        let visible = visible_files();
+                        if visible.is_empty() {
+                            let message = if files.is_empty() {
+                                view! {
+                                    <p>
                                     "nothing here yet — " <A href="/upload">"upload something"</A>
                                     " to get started."
                                 </p>
@@ -942,20 +944,30 @@ fn Browse(
                             </div>
                         }
                             .into_any()
+                        }
                     }
-                }}
+                }
             </div>
 
-            {move || {
-                opened_file
-                    .get()
-                    .and_then(|id| files_for_modal.iter().find(|f| f.id == id).cloned())
-                    .map(|file| {
-                        view! {
-                            <FileModal file folders=folders_for_modal.clone() actions opened_file />
-                        }
-                    })
-            }}
+            {
+                let visible_files = visible_files.clone();
+                move || {
+                    opened_file
+                        .get()
+                        .and_then(|id| files_for_modal.iter().find(|f| f.id == id).cloned())
+                        .map(|file| {
+                            view! {
+                                <FileModal
+                                    file
+                                    folders=folders_for_modal.clone()
+                                    actions
+                                    opened_file
+                                    visible_files=visible_files()
+                                />
+                            }
+                        })
+                }
+            }
         </div>
     }
 }
@@ -1155,6 +1167,36 @@ fn BulkActionsBar(
         select_mode.set(false);
     };
 
+    let delete_selected = move || {
+        for id in selected.get_untracked() {
+            actions.delete_file.dispatch(DeleteFile { id });
+        }
+        clear();
+    };
+
+    // Delete/Backspace deletes the current selection, same as the button
+    // below - skipped while a form field (most likely the search box,
+    // still usable during select mode) has focus, so backspacing out a
+    // search term doesn't also wipe out your files.
+    #[cfg(feature = "hydrate")]
+    window_event_listener(leptos::ev::keydown, move |ev| {
+        use wasm_bindgen::JsCast;
+
+        let is_form_field = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .is_some_and(|el| matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT"));
+        if is_form_field {
+            return;
+        }
+
+        if matches!(ev.key().as_str(), "Delete" | "Backspace")
+            && !selected.get_untracked().is_empty()
+        {
+            delete_selected();
+        }
+    });
+
     view! {
         <div class="bulk-actions-bar">
             <span class="bulk-actions-count">
@@ -1184,16 +1226,7 @@ fn BulkActionsBar(
                     })
                     .collect_view()}
             </select>
-            <button
-                type="button"
-                class="btn btn-ghost"
-                on:click=move |_| {
-                    for id in selected.get_untracked() {
-                        actions.delete_file.dispatch(DeleteFile { id });
-                    }
-                    clear();
-                }
-            >
+            <button type="button" class="btn btn-ghost" on:click=move |_| delete_selected()>
                 "delete selected"
             </button>
             <button type="button" class="btn btn-ghost" on:click=move |_| clear()>
@@ -1372,6 +1405,7 @@ fn FileModal(
     folders: Vec<FolderSummary>,
     actions: Actions,
     opened_file: RwSignal<Option<String>>,
+    visible_files: Vec<FileSummary>,
 ) -> impl IntoView {
     let (copied, set_copied) = signal(false);
     let (renaming, set_renaming) = signal(false);
@@ -1409,6 +1443,56 @@ fn FileModal(
     let short_hash = file.sha256.get(..12).unwrap_or(&file.sha256).to_string();
 
     let close = move |_| opened_file.set(None);
+
+    // Only actually read by the keydown listener below, which is
+    // hydrate-only - keeps the SSR build from warning about it.
+    #[cfg(not(feature = "hydrate"))]
+    let _ = &visible_files;
+
+    // Escape closes the modal; left/right step to the previous/next file
+    // in whatever's currently visible in the grid behind it (already
+    // filtered/sorted the same way), so browsing a batch of screenshots
+    // doesn't mean closing and reopening one at a time. Skipped while a
+    // form field inside the modal (rename, tags, password, ...) has
+    // focus, so the arrow keys still just move the text cursor there
+    // instead of jumping files out from under you. Leptos tears this
+    // listener down whenever the modal re-renders for a different file
+    // (including from this listener's own navigation) or closes.
+    #[cfg(feature = "hydrate")]
+    {
+        let current_id = file.id.clone();
+        window_event_listener(leptos::ev::keydown, move |ev| {
+            use wasm_bindgen::JsCast;
+
+            let is_form_field = ev
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+                .is_some_and(|el| {
+                    matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT")
+                });
+            if is_form_field {
+                return;
+            }
+
+            match ev.key().as_str() {
+                "Escape" => opened_file.set(None),
+                "ArrowLeft" | "ArrowRight" => {
+                    let Some(index) = visible_files.iter().position(|f| f.id == current_id) else {
+                        return;
+                    };
+                    let next = if ev.key() == "ArrowLeft" {
+                        index.checked_sub(1)
+                    } else {
+                        (index + 1 < visible_files.len()).then_some(index + 1)
+                    };
+                    if let Some(next) = next {
+                        opened_file.set(Some(visible_files[next].id.clone()));
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
 
     let copy = move |_| {
         copy_to_clipboard(&copy_url);
