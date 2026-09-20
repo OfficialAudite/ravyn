@@ -73,6 +73,10 @@ pub fn router(state: AppState) -> Router {
             "/admin/cost-settings",
             get(account::get_cost_settings).put(account::set_cost_settings),
         )
+        .route(
+            "/admin/compression-settings",
+            get(account::get_compression_settings).put(account::set_compression_settings),
+        )
         .route("/v/{id}", get(view::view_file))
         .route("/short-urls", post(shorten::create_short_url))
         .route("/short-urls", get(shorten::list_short_urls))

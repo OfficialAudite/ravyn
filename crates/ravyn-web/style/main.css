@@ -324,6 +324,28 @@ input[type="password"]:focus {
   margin-top: 1rem;
 }
 
+.dropzone-options {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  font-size: 0.8rem;
+  color: var(--fog);
+}
+
+.dropzone-options select,
+.dropzone-options input {
+  font-size: 0.8rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.dropzone-options input[type="number"] {
+  width: 100px;
+}
+
 .dropzone .raven {
   width: 40px;
   height: 40px;

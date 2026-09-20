@@ -1125,6 +1125,71 @@ pub async fn set_cost_settings(
     StatusCode::NO_CONTENT.into_response()
 }
 
+#[derive(Serialize)]
+pub struct CompressionSettingsResponse {
+    format: Option<String>,
+    quality: Option<i64>,
+}
+
+/// Read side of the instance-wide default image compression form - see
+/// `save_uploaded_part` for where this actually gets applied.
+pub async fn get_compression_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    match state.db.get_compression_settings().await {
+        Ok((format, quality)) => Json(CompressionSettingsResponse {
+            format: format.map(|f| f.as_str().to_string()),
+            quality,
+        })
+        .into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to load compression settings");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SetCompressionSettingsRequest {
+    format: Option<String>,
+    quality: Option<i64>,
+}
+
+/// A dedicated form for the same reason `set_cost_settings` is: turning
+/// this back off needs to send an explicit `null`, which
+/// `set_instance_settings`'s "absent field means leave it alone"
+/// convention can't express.
+pub async fn set_compression_settings(
+    AuthedUser(user): AuthedUser,
+    State(state): State<AppState>,
+    Json(body): Json<SetCompressionSettingsRequest>,
+) -> Response {
+    if !user.is_admin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let format = match body.format.as_deref().filter(|s| !s.is_empty()) {
+        Some(raw) => match ravyn_core::ImageCompressionFormat::parse(raw) {
+            Some(format) => Some(format),
+            None => return (StatusCode::BAD_REQUEST, "invalid compression format").into_response(),
+        },
+        None => None,
+    };
+    let quality = format.is_some().then_some(body.quality).flatten();
+
+    if let Err(err) = state.db.set_compression_settings(format, quality).await {
+        tracing::error!(%err, "failed to save compression settings");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 #[derive(Deserialize)]
 pub struct CreateApiTokenRequest {
     name: String,

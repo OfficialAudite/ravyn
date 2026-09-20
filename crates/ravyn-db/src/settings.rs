@@ -1,4 +1,4 @@
-use ravyn_core::{ExpiryPreset, NamingScheme, RegistrationMode};
+use ravyn_core::{ExpiryPreset, ImageCompressionFormat, NamingScheme, RegistrationMode};
 
 use crate::{Db, DbError};
 
@@ -127,6 +127,40 @@ impl Db {
         )
         .bind(cost_per_gb_month)
         .bind(cost_currency)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// `None` (both columns unset) means off, the same "no sensible
+    /// default to guess at" reasoning as the cost estimate's own price
+    /// field - unlike every naming/expiry/privacy default above, this one
+    /// trades image quality for size, so it stays opt-in rather than
+    /// silently recompressing uploads until an admin turns it on.
+    pub async fn get_compression_settings(
+        &self,
+    ) -> Result<(Option<ImageCompressionFormat>, Option<i64>), DbError> {
+        let row: (Option<String>, Option<i32>) = sqlx::query_as(
+            "select default_compression_format, default_compression_quality from instance_settings where id = 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let format = row.0.as_deref().and_then(ImageCompressionFormat::parse);
+        Ok((format, row.1.map(|quality| quality as i64)))
+    }
+
+    pub async fn set_compression_settings(
+        &self,
+        format: Option<ImageCompressionFormat>,
+        quality: Option<i64>,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "update instance_settings set default_compression_format = $1, default_compression_quality = $2 where id = 1",
+        )
+        .bind(format.map(|f| f.as_str()))
+        .bind(quality.map(|quality| quality as i32))
         .execute(&self.pool)
         .await?;
 

@@ -559,6 +559,28 @@ fn Dropzone() -> impl IntoView {
                 <RavenIcon class="raven"/>
                 <p class="dropzone-title">"drop files into the hoard"</p>
                 <p class="dropzone-hint">"or click to choose — multiple at once is fine"</p>
+                // Plain named form fields, not Leptos-tracked signals - the
+                // browser already includes whatever they're currently set
+                // to when the form submits, native `<form>` behavior. Has
+                // to come before `file-input` in the markup: the server
+                // reads these two fields off the multipart stream before
+                // it starts treating anything as a file to save, and a
+                // stream only ever goes one direction.
+                <div class="dropzone-options">
+                    <label for="compress-format">"compress images"</label>
+                    <select id="compress-format" name="compress_format">
+                        <option value="">"off"</option>
+                        <option value="jpeg">"JPEG"</option>
+                        <option value="avif">"AVIF"</option>
+                    </select>
+                    <input
+                        type="number"
+                        name="compress_quality"
+                        placeholder="quality (80)"
+                        min="1"
+                        max="100"
+                    />
+                </div>
                 <input
                     id="file-input"
                     type="file"
