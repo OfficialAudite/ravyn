@@ -44,22 +44,32 @@ fn unsafe_for_inline_navigation(content_type: &str) -> bool {
     )
 }
 
-/// Adds `X-Content-Type-Options: nosniff` always, and forces a download
-/// (`Content-Disposition: attachment`) instead of an inline response for
-/// anything `unsafe_for_inline_navigation` flags - see that function for
-/// why. Shared by every route that serves a file's original bytes
-/// (`GET /files/{id}`, and `/v/{id}`'s redirect ends up here too), so the
-/// decision only has to be made in one place.
+/// Adds `X-Content-Type-Options: nosniff` always, and a `Content-Disposition`
+/// carrying the file's real name (extension included) - `attachment` for
+/// anything `unsafe_for_inline_navigation` flags, `inline` otherwise. Either
+/// way the `filename` param is what the browser saves the file as, so a type
+/// it can't render inline (an `.apk`, say) still downloads under its real
+/// name instead of falling back to the bare, extension-less id in the URL.
+/// `inline` for the safe majority preserves today's behavior for images,
+/// video, audio, PDFs, and the like - the browser previews them exactly as
+/// it did with no header at all, since it only downloads what it can't
+/// render inline regardless of the disposition type. Shared by every route
+/// that serves a file's original bytes (`GET /files/{id}`, and `/v/{id}`'s
+/// redirect ends up here too), so the decision only has to be made in one
+/// place.
 fn file_response_headers(content_type: &str, original_name: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
 
-    if unsafe_for_inline_navigation(content_type) {
-        let safe_name = original_name.replace(['"', '\\', '\r', '\n'], "_");
-        let value = format!("attachment; filename=\"{safe_name}\"");
-        if let Ok(value) = value.parse() {
-            headers.insert(header::CONTENT_DISPOSITION, value);
-        }
+    let disposition = if unsafe_for_inline_navigation(content_type) {
+        "attachment"
+    } else {
+        "inline"
+    };
+    let safe_name = original_name.replace(['"', '\\', '\r', '\n'], "_");
+    let value = format!("{disposition}; filename=\"{safe_name}\"");
+    if let Ok(value) = value.parse() {
+        headers.insert(header::CONTENT_DISPOSITION, value);
     }
 
     headers
