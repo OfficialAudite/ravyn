@@ -76,6 +76,21 @@ async fn resolve(parts: &mut Parts, state: &AppState) -> Result<Option<User>, St
     Ok(None)
 }
 
+/// Argon2 is deliberately slow, so it runs off the async worker threads.
+pub async fn verify_password(password: &str, hash: &str) -> bool {
+    let (password, hash) = (password.to_owned(), hash.to_owned());
+    tokio::task::spawn_blocking(move || auth::verify_password(&password, &hash))
+        .await
+        .unwrap_or(false)
+}
+
+pub async fn hash_password(password: &str) -> Result<String, auth::AuthError> {
+    let password = password.to_owned();
+    tokio::task::spawn_blocking(move || auth::hash_password(&password))
+        .await
+        .unwrap_or(Err(auth::AuthError::Hash))
+}
+
 fn bearer_token(parts: &Parts) -> Option<&str> {
     parts
         .headers

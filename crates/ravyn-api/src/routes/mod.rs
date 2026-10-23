@@ -5,28 +5,34 @@ mod shorten;
 mod uploads;
 mod view;
 
+pub use account::run_session_sweep;
 pub use files::run_expiry_sweep;
 pub use uploads::run_chunked_upload_sweep;
 
 use axum::{
-    extract::{DefaultBodyLimit, State},
-    http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{DefaultBodyLimit, Path, State},
+    http::{header, HeaderMap, StatusCode, Uri},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{delete, get, patch, post, put},
-    Router,
+    Form, Router,
 };
-use ravyn_core::{auth as core_auth, File, User};
-use serde::Serialize;
+use axum_extra::extract::{
+    cookie::{Cookie, SameSite},
+    CookieJar,
+};
+use ravyn_core::{auth as core_auth, File, User, UserId};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::{rate_limit::client_ip, state::AppState};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/files/{id}", get(files::get_file))
         .route("/files/{id}", delete(files::delete_file))
+        .route("/files/{id}", post(unlock_file))
         .route("/files/{id}/thumbnail", get(files::get_file_thumbnail))
         .route("/files/{id}/folder", put(files::set_file_folder))
         .route("/files/{id}/password", put(files::set_file_password))
@@ -77,7 +83,7 @@ pub fn router(state: AppState) -> Router {
             "/admin/compression-settings",
             get(account::get_compression_settings).put(account::set_compression_settings),
         )
-        .route("/v/{id}", get(view::view_file))
+        .route("/v/{id}", get(view::view_file).post(unlock_file))
         .route("/short-urls", post(shorten::create_short_url))
         .route("/short-urls", get(shorten::list_short_urls))
         .route("/short-urls/{id}", delete(shorten::delete_short_url))
@@ -163,29 +169,144 @@ impl From<File> for FileSummary {
     }
 }
 
-/// A file is viewable without a password by its owner, or by anyone who
-/// either doesn't need one (none set) or supplied the right one.
-pub fn is_authorized(file: &File, requester: Option<&User>, password: Option<&str>) -> bool {
-    if let Some(user) = requester {
-        if user.id == file.owner_id {
-            return true;
-        }
-    }
+pub enum Access {
+    Granted,
+    Denied,
+    Throttled,
+}
 
-    match &file.password_hash {
-        None => true,
-        Some(hash) => password
-            .map(|candidate| core_auth::verify_password(candidate, hash))
-            .unwrap_or(false),
+/// The owner always gets in, anyone else needs the password if one is set.
+/// Only wrong guesses count against the limiter, so someone streaming a
+/// protected video (one request per seek) never trips it.
+pub async fn check_access(
+    state: &AppState,
+    headers: &HeaderMap,
+    resource: Uuid,
+    owner_id: UserId,
+    password_hash: Option<&str>,
+    requester: Option<&User>,
+    password: Option<&str>,
+) -> Access {
+    if requester.is_some_and(|user| user.id == owner_id) {
+        return Access::Granted;
     }
+    let Some(hash) = password_hash else {
+        return Access::Granted;
+    };
+    let unlocked = CookieJar::from_headers(headers)
+        .get(&unlock_cookie_name(resource))
+        .is_some_and(|cookie| cookie.value() == unlock_token(resource, hash));
+    if unlocked {
+        return Access::Granted;
+    }
+    let Some(candidate) = password else {
+        return Access::Denied;
+    };
+
+    let limiter = &state.rate_limiters.resource_password;
+    let key = format!("{}:{resource}", client_ip(headers));
+    if limiter.is_blocked(&key) {
+        return Access::Throttled;
+    }
+    if crate::auth::verify_password(candidate, hash).await {
+        Access::Granted
+    } else {
+        limiter.check(&key);
+        Access::Denied
+    }
+}
+
+fn unlock_cookie_name(resource: Uuid) -> String {
+    format!("ravyn_unlock_{}", resource.simple())
+}
+
+/// Derived from the password hash, so changing or removing the password
+/// invalidates every unlock cookie handed out for the old one.
+fn unlock_token(resource: Uuid, password_hash: &str) -> String {
+    core_auth::hash_token(&format!("unlock:{resource}:{password_hash}"))
+}
+
+pub fn cookie_secure(state: &AppState) -> bool {
+    state
+        .public_url
+        .as_deref()
+        .is_some_and(|url| url.starts_with("https://"))
+}
+
+#[derive(Deserialize)]
+pub struct UnlockForm {
+    password: String,
+}
+
+/// The password prompt posts here, so the password never ends up in a URL
+/// (browser history, server logs, `Referer`). A correct one sets a cookie
+/// for this file and redirects back to the same, clean URL.
+pub async fn unlock_file(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    uri: Uri,
+    headers: HeaderMap,
+    Form(form): Form<UnlockForm>,
+) -> Response {
+    let file = match state.db.get_file(ravyn_core::FileId(id)).await {
+        Ok(Some(file)) => file,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to look up file");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let Some(hash) = file.password_hash.as_deref() else {
+        return Redirect::to(uri.path()).into_response();
+    };
+
+    let access = check_access(
+        &state,
+        &headers,
+        id,
+        file.owner_id,
+        Some(hash),
+        None,
+        Some(&form.password),
+    )
+    .await;
+    match access {
+        Access::Granted => {
+            let cookie = Cookie::build((unlock_cookie_name(id), unlock_token(id, hash)))
+                .path("/")
+                .http_only(true)
+                .secure(cookie_secure(&state))
+                .same_site(SameSite::Lax)
+                .max_age(time::Duration::days(1))
+                .build();
+            (CookieJar::new().add(cookie), Redirect::to(uri.path())).into_response()
+        }
+        Access::Throttled => too_many_password_attempts(),
+        Access::Denied => (
+            StatusCode::UNAUTHORIZED,
+            Html(password_prompt_html("wrong password")),
+        )
+            .into_response(),
+    }
+}
+
+pub fn too_many_password_attempts() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many wrong passwords, try again later",
+    )
+        .into_response()
 }
 
 /// Hashes a password for storage, treating an empty string the same as
 /// "no password" (clears it). Shared by files' and folders' password
 /// endpoints.
-pub fn hash_optional_password(password: Option<String>) -> Result<Option<String>, StatusCode> {
+pub async fn hash_optional_password(
+    password: Option<String>,
+) -> Result<Option<String>, StatusCode> {
     match password.filter(|p| !p.is_empty()) {
-        Some(password) => core_auth::hash_password(&password)
+        Some(password) => crate::auth::hash_password(&password)
+            .await
             .map(Some)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
         None => Ok(None),
@@ -247,7 +368,7 @@ pub fn password_prompt_html(message: &str) -> String {
   p {{ color:#9291a3; font-size:.8rem; margin:0 0 .5rem; }}
 </style></head>
 <body>
-  <form method="get">
+  <form method="post">
     <p>{message}</p>
     <input type="password" name="password" placeholder="password" autofocus>
     <button type="submit">unlock</button>

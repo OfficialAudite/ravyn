@@ -2,7 +2,67 @@ use ravyn_core::{ExpiryPreset, ImageCompressionFormat, NamingScheme, Registratio
 
 use crate::{Db, DbError};
 
+/// Everything an upload needs from the instance settings, in one query.
+/// Unrecognized stored values fall back to the same safe defaults as the
+/// single-field getters below.
+#[derive(Debug, Clone)]
+pub struct UploadSettings {
+    pub naming_scheme: NamingScheme,
+    pub random_name_length: usize,
+    pub default_expiry: ExpiryPreset,
+    pub strip_exif: bool,
+    pub compression_format: Option<ImageCompressionFormat>,
+    pub compression_quality: Option<i64>,
+}
+
+impl Default for UploadSettings {
+    fn default() -> Self {
+        Self {
+            naming_scheme: NamingScheme::Original,
+            random_name_length: 8,
+            default_expiry: ExpiryPreset::Never,
+            strip_exif: true,
+            compression_format: None,
+            compression_quality: None,
+        }
+    }
+}
+
 impl Db {
+    pub async fn get_upload_settings(&self) -> Result<UploadSettings, DbError> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            naming_scheme: String,
+            random_name_length: i32,
+            default_expiry_preset: String,
+            strip_exif: bool,
+            default_compression_format: Option<String>,
+            default_compression_quality: Option<i32>,
+        }
+
+        let row = sqlx::query_as::<_, Row>(
+            "select naming_scheme, random_name_length, default_expiry_preset, strip_exif,
+                    default_compression_format, default_compression_quality
+             from instance_settings where id = 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(UploadSettings {
+            naming_scheme: NamingScheme::parse(&row.naming_scheme)
+                .unwrap_or(NamingScheme::Original),
+            random_name_length: row.random_name_length.max(1) as usize,
+            default_expiry: ExpiryPreset::parse(&row.default_expiry_preset)
+                .unwrap_or(ExpiryPreset::Never),
+            strip_exif: row.strip_exif,
+            compression_format: row
+                .default_compression_format
+                .as_deref()
+                .and_then(ImageCompressionFormat::parse),
+            compression_quality: row.default_compression_quality.map(i64::from),
+        })
+    }
+
     /// Falls back to `Closed` if the mode stored in the database is somehow
     /// unrecognized (e.g. rolled back to an older schema) rather than
     /// failing the request — the safer of the two failure directions.

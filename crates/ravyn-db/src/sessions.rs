@@ -64,6 +64,31 @@ impl Db {
         Ok(row.map(User::from))
     }
 
+    pub async fn delete_other_sessions(
+        &self,
+        user_id: UserId,
+        keep_token_hash: Option<&str>,
+    ) -> Result<(), DbError> {
+        sqlx::query("delete from sessions where user_id = $1 and token_hash is distinct from $2")
+            .bind(user_id.0)
+            .bind(keep_token_hash)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn delete_expired_sessions(&self) -> Result<(), DbError> {
+        sqlx::query("delete from sessions where expires_at < now()")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("delete from pending_logins where expires_at < now()")
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn delete_session(&self, token_hash: &str) -> Result<(), DbError> {
         sqlx::query("delete from sessions where token_hash = $1")
             .bind(token_hash)

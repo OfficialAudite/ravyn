@@ -321,11 +321,14 @@ async fn raw_proxy(
         std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
 
     let mut request = reqwest::Client::new().get(format!("{api_base}/files/{id}"));
-    if let Some(cookie) = headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-    {
-        request = request.header("Cookie", cookie);
+    for name in [
+        axum::http::header::COOKIE,
+        axum::http::header::RANGE,
+        axum::http::header::IF_NONE_MATCH,
+    ] {
+        if let Some(value) = headers.get(&name).and_then(|value| value.to_str().ok()) {
+            request = request.header(name.as_str(), value);
+        }
     }
 
     let response = match request.send().await {
@@ -345,13 +348,19 @@ async fn raw_proxy(
     for name in [
         axum::http::header::CONTENT_TYPE,
         axum::http::header::CONTENT_DISPOSITION,
+        axum::http::header::CONTENT_LENGTH,
+        axum::http::header::CONTENT_RANGE,
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        axum::http::header::ACCEPT_RANGES,
+        axum::http::header::ETAG,
+        axum::http::header::CACHE_CONTROL,
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
     ] {
-        if let Some(value) = response.headers().get(&name) {
-            headers.insert(name, value.clone());
+        if let Some(value) = response.headers().get(name.as_str()) {
+            if let Ok(value) = axum::http::HeaderValue::from_bytes(value.as_bytes()) {
+                headers.insert(name, value);
+            }
         }
-    }
-    if let Some(value) = response.headers().get("x-content-type-options") {
-        headers.insert("x-content-type-options", value.clone());
     }
 
     let body = axum::body::Body::from_stream(response.bytes_stream());

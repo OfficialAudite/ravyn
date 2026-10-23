@@ -515,7 +515,7 @@ pub fn UploadPage() -> impl IntoView {
 fn Dropzone() -> impl IntoView {
     let (dragging, set_dragging) = signal(false);
     let uploading_name = RwSignal::new(None::<String>);
-    let progress = RwSignal::new((0u32, 0u32));
+    let progress = RwSignal::new((0u64, 0u64));
     let upload_error = RwSignal::new(None::<String>);
 
     let submit_or_chunk = move || {
@@ -606,7 +606,7 @@ fn Dropzone() -> impl IntoView {
                                 <p class="dropzone-hint">{format!("uploading {name}...")}</p>
                                 <progress max="100" value=percent></progress>
                                 <p class="dropzone-hint">
-                                    {format_size(sent as u64)} " of " {format_size(total as u64)}
+                                    {format_size(sent)} " of " {format_size(total)}
                                 </p>
                             </div>
                         }
@@ -807,6 +807,8 @@ fn ShortUrlRow(info: ShortUrlInfo, delete_action: ServerAction<DeleteShortUrl>) 
     }
 }
 
+const GRID_PAGE_SIZE: usize = 120;
+
 #[component]
 pub fn BrowsePage() -> impl IntoView {
     let ctx = expect_context::<DashboardContext>();
@@ -835,6 +837,18 @@ fn Browse(
     let sort_order = RwSignal::new(SortOrder::Newest);
     let select_mode = RwSignal::new(false);
     let selected = RwSignal::new(std::collections::HashSet::<String>::new());
+
+    // Rendering thousands of cards at once is what makes a big library
+    // slow, so the grid grows a page at a time. Changing a filter starts
+    // over from the top.
+    let shown = RwSignal::new(GRID_PAGE_SIZE);
+    Effect::new(move |_| {
+        selected_folder.track();
+        search.track();
+        type_filter.track();
+        sort_order.track();
+        shown.set(GRID_PAGE_SIZE);
+    });
 
     let visible_files = {
         let files = files.clone();
@@ -946,10 +960,12 @@ fn Browse(
                         }
                             .into_any()
                     } else {
+                        let remaining = visible.len().saturating_sub(shown.get());
                         view! {
                             <div class="file-grid">
                                 {visible
                                     .into_iter()
+                                    .take(shown.get())
                                     .map(|file| {
                                         view! {
                                             <FileCard
@@ -964,6 +980,16 @@ fn Browse(
                                     })
                                     .collect_view()}
                             </div>
+                            {(remaining > 0).then(|| {
+                                view! {
+                                    <button
+                                        class="btn btn-ghost show-more"
+                                        on:click=move |_| shown.update(|n| *n += GRID_PAGE_SIZE)
+                                    >
+                                        {format!("show more ({remaining} left)")}
+                                    </button>
+                                }
+                            })}
                         }
                             .into_any()
                         }

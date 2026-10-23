@@ -11,7 +11,13 @@ mod settings;
 mod short_urls;
 mod users;
 
+#[cfg(test)]
+mod tests;
+
 pub use error::DbError;
+pub use files::FileStats;
+pub use settings::UploadSettings;
+pub use users::UserUsage;
 
 use std::time::Duration;
 
