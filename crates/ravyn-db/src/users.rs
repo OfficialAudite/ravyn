@@ -31,7 +31,49 @@ impl From<UserRow> for User {
     }
 }
 
+pub struct UserUsage {
+    pub user: User,
+    pub storage_used_bytes: i64,
+    pub max_storage_bytes: Option<i64>,
+    pub file_count: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct UserUsageRow {
+    #[sqlx(flatten)]
+    user: UserRow,
+    storage_used_bytes: i64,
+    max_storage_bytes: Option<i64>,
+    file_count: i64,
+}
+
 impl Db {
+    pub async fn list_users_with_usage(&self) -> Result<Vec<UserUsage>, DbError> {
+        let rows = sqlx::query_as::<_, UserUsageRow>(
+            "select users.*,
+                    coalesce(usage.bytes, 0)::bigint as storage_used_bytes,
+                    coalesce(usage.count, 0) as file_count
+             from users
+             left join (
+                 select owner_id, sum(size_bytes) as bytes, count(*) as count
+                 from files group by owner_id
+             ) usage on usage.owner_id = users.id
+             order by users.created_at asc",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| UserUsage {
+                user: User::from(row.user),
+                storage_used_bytes: row.storage_used_bytes,
+                max_storage_bytes: row.max_storage_bytes,
+                file_count: row.file_count,
+            })
+            .collect())
+    }
+
     pub async fn create_user(&self, user: &User) -> Result<(), DbError> {
         sqlx::query(
             "insert into users (id, username, password_hash, is_admin, created_at)
@@ -59,6 +101,14 @@ impl Db {
         Ok(count > 0)
     }
 
+    pub async fn count_users(&self) -> Result<i64, DbError> {
+        let count: i64 = sqlx::query_scalar("select count(*) from users")
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(count)
+    }
+
     pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, DbError> {
         let row = sqlx::query_as::<_, UserRow>("select * from users where username = $1")
             .bind(username)
@@ -66,6 +116,17 @@ impl Db {
             .await?;
 
         Ok(row.map(User::from))
+    }
+
+    pub async fn username_taken(&self, username: &str) -> Result<bool, DbError> {
+        let taken: bool = sqlx::query_scalar(
+            "select exists(select 1 from users where lower(username) = lower($1))",
+        )
+        .bind(username)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(taken)
     }
 
     pub async fn get_user_by_id(&self, id: UserId) -> Result<Option<User>, DbError> {

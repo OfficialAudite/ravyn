@@ -10,14 +10,18 @@ pub use files::run_expiry_sweep;
 pub use uploads::run_chunked_upload_sweep;
 
 use axum::{
-    extract::{DefaultBodyLimit, State},
-    http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{DefaultBodyLimit, Path, State},
+    http::{header, HeaderMap, StatusCode, Uri},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{delete, get, patch, post, put},
-    Router,
+    Form, Router,
 };
-use ravyn_core::{File, User, UserId};
-use serde::Serialize;
+use axum_extra::extract::{
+    cookie::{Cookie, SameSite},
+    CookieJar,
+};
+use ravyn_core::{auth as core_auth, File, User, UserId};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -28,6 +32,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/files/{id}", get(files::get_file))
         .route("/files/{id}", delete(files::delete_file))
+        .route("/files/{id}", post(unlock_file))
         .route("/files/{id}/thumbnail", get(files::get_file_thumbnail))
         .route("/files/{id}/folder", put(files::set_file_folder))
         .route("/files/{id}/password", put(files::set_file_password))
@@ -78,7 +83,7 @@ pub fn router(state: AppState) -> Router {
             "/admin/compression-settings",
             get(account::get_compression_settings).put(account::set_compression_settings),
         )
-        .route("/v/{id}", get(view::view_file))
+        .route("/v/{id}", get(view::view_file).post(unlock_file))
         .route("/short-urls", post(shorten::create_short_url))
         .route("/short-urls", get(shorten::list_short_urls))
         .route("/short-urls/{id}", delete(shorten::delete_short_url))
@@ -188,6 +193,12 @@ pub async fn check_access(
     let Some(hash) = password_hash else {
         return Access::Granted;
     };
+    let unlocked = CookieJar::from_headers(headers)
+        .get(&unlock_cookie_name(resource))
+        .is_some_and(|cookie| cookie.value() == unlock_token(resource, hash));
+    if unlocked {
+        return Access::Granted;
+    }
     let Some(candidate) = password else {
         return Access::Denied;
     };
@@ -202,6 +213,80 @@ pub async fn check_access(
     } else {
         limiter.check(&key);
         Access::Denied
+    }
+}
+
+fn unlock_cookie_name(resource: Uuid) -> String {
+    format!("ravyn_unlock_{}", resource.simple())
+}
+
+/// Derived from the password hash, so changing or removing the password
+/// invalidates every unlock cookie handed out for the old one.
+fn unlock_token(resource: Uuid, password_hash: &str) -> String {
+    core_auth::hash_token(&format!("unlock:{resource}:{password_hash}"))
+}
+
+pub fn cookie_secure(state: &AppState) -> bool {
+    state
+        .public_url
+        .as_deref()
+        .is_some_and(|url| url.starts_with("https://"))
+}
+
+#[derive(Deserialize)]
+pub struct UnlockForm {
+    password: String,
+}
+
+/// The password prompt posts here, so the password never ends up in a URL
+/// (browser history, server logs, `Referer`). A correct one sets a cookie
+/// for this file and redirects back to the same, clean URL.
+pub async fn unlock_file(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    uri: Uri,
+    headers: HeaderMap,
+    Form(form): Form<UnlockForm>,
+) -> Response {
+    let file = match state.db.get_file(ravyn_core::FileId(id)).await {
+        Ok(Some(file)) => file,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, "failed to look up file");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let Some(hash) = file.password_hash.as_deref() else {
+        return Redirect::to(uri.path()).into_response();
+    };
+
+    let access = check_access(
+        &state,
+        &headers,
+        id,
+        file.owner_id,
+        Some(hash),
+        None,
+        Some(&form.password),
+    )
+    .await;
+    match access {
+        Access::Granted => {
+            let cookie = Cookie::build((unlock_cookie_name(id), unlock_token(id, hash)))
+                .path("/")
+                .http_only(true)
+                .secure(cookie_secure(&state))
+                .same_site(SameSite::Lax)
+                .max_age(time::Duration::days(1))
+                .build();
+            (CookieJar::new().add(cookie), Redirect::to(uri.path())).into_response()
+        }
+        Access::Throttled => too_many_password_attempts(),
+        Access::Denied => (
+            StatusCode::UNAUTHORIZED,
+            Html(password_prompt_html("wrong password")),
+        )
+            .into_response(),
     }
 }
 
@@ -283,7 +368,7 @@ pub fn password_prompt_html(message: &str) -> String {
   p {{ color:#9291a3; font-size:.8rem; margin:0 0 .5rem; }}
 </style></head>
 <body>
-  <form method="get">
+  <form method="post">
     <p>{message}</p>
     <input type="password" name="password" placeholder="password" autofocus>
     <button type="submit">unlock</button>

@@ -49,7 +49,12 @@ pub async fn login(
 
     let user = match state.db.get_user_by_username(&body.username).await {
         Ok(Some(user)) => user,
-        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Ok(None) => {
+            // Same argon2 cost as a real account, so response time doesn't
+            // reveal which usernames exist.
+            crate::auth::verify_password(&body.password, dummy_password_hash()).await;
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
         Err(err) => {
             tracing::error!(%err, "failed to look up user");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -69,6 +74,13 @@ pub async fn login(
         .log_activity(Some(user.id), &user.username, "logged in", None)
         .await;
     new_session_response(&state, user.id).await
+}
+
+fn dummy_password_hash() -> &'static str {
+    static HASH: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        core_auth::hash_password("ravyn-dummy-password").expect("failed to hash password")
+    });
+    &HASH
 }
 
 async fn new_pending_login_response(state: &AppState, user_id: UserId) -> Response {
@@ -182,10 +194,7 @@ async fn new_session_response(state: &AppState, user_id: UserId) -> Response {
 
     // Secure whenever the instance is served over https, plain http stays
     // usable for local development.
-    let secure = state
-        .public_url
-        .as_deref()
-        .is_some_and(|url| url.starts_with("https://"));
+    let secure = super::cookie_secure(state);
     let cookie = Cookie::build((SESSION_COOKIE, token))
         .path("/")
         .http_only(true)
@@ -222,10 +231,18 @@ pub async fn register(
             .into_response();
     }
 
-    if body.username.trim().is_empty() || body.password.is_empty() {
+    let username = body.username.trim().to_string();
+    if username.is_empty() || body.password.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             "username and password are required",
+        )
+            .into_response();
+    }
+    if !valid_username(&username) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "usernames are up to 32 letters, digits, '.', '_' or '-'",
         )
             .into_response();
     }
@@ -277,9 +294,9 @@ pub async fn register(
         }
     }
 
-    match state.db.get_user_by_username(&body.username).await {
-        Ok(Some(_)) => return (StatusCode::CONFLICT, "username already taken").into_response(),
-        Ok(None) => {}
+    match state.db.username_taken(&username).await {
+        Ok(true) => return (StatusCode::CONFLICT, "username already taken").into_response(),
+        Ok(false) => {}
         Err(err) => {
             tracing::error!(%err, "failed to look up user");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -310,7 +327,7 @@ pub async fn register(
 
     let user = User {
         id: UserId::new(),
-        username: body.username,
+        username,
         password_hash,
         is_admin: is_first_user,
         created_at: OffsetDateTime::now_utc(),
@@ -347,6 +364,15 @@ pub async fn register(
         .await;
 
     new_session_response(&state, user.id).await
+}
+
+/// ASCII only, so a new account can't pass for an existing one with
+/// look-alike characters (Cyrillic "а" for Latin "a") or stray spaces.
+fn valid_username(username: &str) -> bool {
+    (1..=32).contains(&username.len())
+        && username
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
 /// Public: lets the login screen decide whether to offer "create an
@@ -800,17 +826,14 @@ pub struct AdminUserSummary {
     file_count: i64,
 }
 
-/// Every account on the instance with its current storage usage — an
-/// admin's view of who's using what, and the basis for setting limits.
-/// Usage is computed per user rather than fetched in one join here; at the
-/// scale a self-hosted instance runs at, N+1 simple indexed queries costs
-/// nothing and keeps this handler from having to know how that join works.
+/// Every account on the instance with its current storage usage, the
+/// basis for setting limits.
 pub async fn list_users(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {
     if !user.is_admin {
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let users = match state.db.list_users().await {
+    let users = match state.db.list_users_with_usage().await {
         Ok(users) => users,
         Err(err) => {
             tracing::error!(%err, "failed to list users");
@@ -818,21 +841,18 @@ pub async fn list_users(AuthedUser(user): AuthedUser, State(state): State<AppSta
         }
     };
 
-    let mut summaries = Vec::with_capacity(users.len());
-    for u in users {
-        let storage_used_bytes = state.db.get_storage_usage(u.id).await.unwrap_or(0);
-        let max_storage_bytes = state.db.get_max_storage_bytes(u.id).await.unwrap_or(None);
-        let file_count = state.db.count_files_for_owner(u.id).await.unwrap_or(0);
-        summaries.push(AdminUserSummary {
-            id: u.id.0,
-            username: u.username,
-            is_admin: u.is_admin,
-            created_at: u.created_at,
-            storage_used_bytes,
-            max_storage_bytes,
-            file_count,
-        });
-    }
+    let summaries: Vec<AdminUserSummary> = users
+        .into_iter()
+        .map(|usage| AdminUserSummary {
+            id: usage.user.id.0,
+            username: usage.user.username,
+            is_admin: usage.user.is_admin,
+            created_at: usage.user.created_at,
+            storage_used_bytes: usage.storage_used_bytes,
+            max_storage_bytes: usage.max_storage_bytes,
+            file_count: usage.file_count,
+        })
+        .collect();
 
     Json(summaries).into_response()
 }
@@ -959,12 +979,7 @@ pub async fn delete_user(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// Buckets a content type the same way the browse page's type filter does
-/// (`TypeFilter` in `crates/ravyn-web/src/dashboard.rs`) — kept as a small
-/// duplicate here rather than a shared crate, since it's four lines and the
-/// two call sites (a filter predicate, a stats tally) want it in different
-/// shapes anyway.
-#[derive(Default, Serialize)]
+#[derive(Serialize)]
 struct TypeCounts {
     images: i64,
     videos: i64,
@@ -973,18 +988,14 @@ struct TypeCounts {
     other: i64,
 }
 
-impl TypeCounts {
-    fn add(&mut self, content_type: &str) {
-        if content_type.starts_with("image/") {
-            self.images += 1;
-        } else if content_type.starts_with("video/") {
-            self.videos += 1;
-        } else if content_type.starts_with("audio/") {
-            self.audio += 1;
-        } else if content_type == "application/pdf" || content_type.starts_with("text/") {
-            self.documents += 1;
-        } else {
-            self.other += 1;
+impl From<&ravyn_db::FileStats> for TypeCounts {
+    fn from(stats: &ravyn_db::FileStats) -> Self {
+        TypeCounts {
+            images: stats.images,
+            videos: stats.videos,
+            audio: stats.audio,
+            documents: stats.documents,
+            other: stats.other,
         }
     }
 }
@@ -998,13 +1009,13 @@ pub struct MyStats {
     by_type: TypeCounts,
 }
 
-/// Every user's own view of their usage — unlike `list_users`, open to
+/// Every user's own view of their usage, unlike `list_users` open to
 /// anyone, not just an admin.
 pub async fn my_stats(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {
-    let files = match state.db.list_files_for_owner(user.id).await {
-        Ok(files) => files,
+    let stats = match state.db.file_stats(Some(user.id)).await {
+        Ok(stats) => stats,
         Err(err) => {
-            tracing::error!(%err, "failed to list files for stats");
+            tracing::error!(%err, "failed to load file stats");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -1014,18 +1025,11 @@ pub async fn my_stats(AuthedUser(user): AuthedUser, State(state): State<AppState
         .await
         .unwrap_or(None);
 
-    let mut by_type = TypeCounts::default();
-    let mut storage_used_bytes = 0i64;
-    for file in &files {
-        storage_used_bytes += file.size_bytes as i64;
-        by_type.add(&file.content_type);
-    }
-
     Json(MyStats {
-        file_count: files.len() as i64,
-        storage_used_bytes,
+        file_count: stats.file_count,
+        storage_used_bytes: stats.total_bytes,
         max_storage_bytes,
-        by_type,
+        by_type: TypeCounts::from(&stats),
     })
     .into_response()
 }
@@ -1048,40 +1052,26 @@ pub struct InstanceStats {
 /// estimate should agree with the number sitting right next to it.
 const BYTES_PER_GB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// The instance-wide counterpart to `my_stats` — every user's usage summed
-/// together, admin only. Reuses `list_files_for_owner` per user rather than
-/// a new "every file regardless of owner" query, for the same reason
-/// `list_users` already does N+1 queries for the per-user list: at
-/// self-hosted scale it's simpler than it is slow.
+/// The instance-wide counterpart to `my_stats`, admin only.
 pub async fn admin_stats(AuthedUser(user): AuthedUser, State(state): State<AppState>) -> Response {
     if !user.is_admin {
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let users = match state.db.list_users().await {
-        Ok(users) => users,
+    let stats = match state.db.file_stats(None).await {
+        Ok(stats) => stats,
         Err(err) => {
-            tracing::error!(%err, "failed to list users for stats");
+            tracing::error!(%err, "failed to load file stats");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-
-    let mut by_type = TypeCounts::default();
-    let mut total_files = 0i64;
-    let mut total_storage_bytes = 0i64;
-
-    for u in &users {
-        let files = state
-            .db
-            .list_files_for_owner(u.id)
-            .await
-            .unwrap_or_default();
-        total_files += files.len() as i64;
-        for file in &files {
-            total_storage_bytes += file.size_bytes as i64;
-            by_type.add(&file.content_type);
+    let total_users = match state.db.count_users().await {
+        Ok(count) => count,
+        Err(err) => {
+            tracing::error!(%err, "failed to count users");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-    }
+    };
 
     let (cost_per_gb_month, cost_currency) = state
         .db
@@ -1089,13 +1079,13 @@ pub async fn admin_stats(AuthedUser(user): AuthedUser, State(state): State<AppSt
         .await
         .unwrap_or((None, "$".to_string()));
     let estimated_monthly_cost =
-        cost_per_gb_month.map(|price| (total_storage_bytes as f64 / BYTES_PER_GB) * price);
+        cost_per_gb_month.map(|price| (stats.total_bytes as f64 / BYTES_PER_GB) * price);
 
     Json(InstanceStats {
-        total_users: users.len() as i64,
-        total_files,
-        total_storage_bytes,
-        by_type,
+        total_users,
+        total_files: stats.file_count,
+        total_storage_bytes: stats.total_bytes,
+        by_type: TypeCounts::from(&stats),
         estimated_monthly_cost,
         cost_currency,
     })
@@ -1385,6 +1375,13 @@ pub async fn set_webhook_settings(
             return (
                 StatusCode::BAD_REQUEST,
                 "webhook url must start with http:// or https://",
+            )
+                .into_response();
+        }
+        if !crate::outbound::is_allowed_target(url, state.allow_private_webhooks) {
+            return (
+                StatusCode::BAD_REQUEST,
+                "webhook url can't point at a private or local address",
             )
                 .into_response();
         }

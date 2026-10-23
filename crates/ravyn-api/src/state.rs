@@ -19,6 +19,7 @@ pub struct AppState {
     /// so cloning it is cheap and keeps connection pooling working. Used
     /// only for firing upload webhook notifications.
     pub http: reqwest::Client,
+    pub allow_private_webhooks: bool,
     /// `RAVYN_PUBLIC_API_URL`, if set — see `routes::resolve_public_base_url`
     /// for why a request's own headers aren't always enough to know this.
     pub public_url: Option<String>,

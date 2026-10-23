@@ -12,6 +12,8 @@ mod short_urls;
 mod users;
 
 pub use error::DbError;
+pub use files::FileStats;
+pub use users::UserUsage;
 
 use std::time::Duration;
 

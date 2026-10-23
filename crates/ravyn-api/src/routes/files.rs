@@ -766,6 +766,11 @@ pub(super) async fn notify_upload_webhook(
         }
     };
 
+    if !crate::outbound::is_allowed_target(&webhook_url, state.allow_private_webhooks) {
+        tracing::warn!("skipping webhook to a private address");
+        return;
+    }
+
     let view_url = format!("{base_url}/v/{}", file.id.0);
     let message = format!(
         "📎 **{}** was just uploaded — {view_url}",
