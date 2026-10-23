@@ -515,7 +515,7 @@ pub fn UploadPage() -> impl IntoView {
 fn Dropzone() -> impl IntoView {
     let (dragging, set_dragging) = signal(false);
     let uploading_name = RwSignal::new(None::<String>);
-    let progress = RwSignal::new((0u32, 0u32));
+    let progress = RwSignal::new((0u64, 0u64));
     let upload_error = RwSignal::new(None::<String>);
 
     let submit_or_chunk = move || {
@@ -606,7 +606,7 @@ fn Dropzone() -> impl IntoView {
                                 <p class="dropzone-hint">{format!("uploading {name}...")}</p>
                                 <progress max="100" value=percent></progress>
                                 <p class="dropzone-hint">
-                                    {format_size(sent as u64)} " of " {format_size(total as u64)}
+                                    {format_size(sent)} " of " {format_size(total)}
                                 </p>
                             </div>
                         }

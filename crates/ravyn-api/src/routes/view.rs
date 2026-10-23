@@ -7,7 +7,9 @@ use ravyn_core::{EmbedSettings, File, FileId};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::{is_authorized, password_prompt_html, resolve_public_base_url};
+use super::{
+    check_access, password_prompt_html, resolve_public_base_url, too_many_password_attempts, Access,
+};
 use crate::{auth::AuthedUser, state::AppState};
 
 #[derive(Deserialize)]
@@ -43,17 +45,31 @@ pub async fn view_file(
     };
 
     let requester = requester.map(|AuthedUser(user)| user);
-    if !is_authorized(&file, requester.as_ref(), query.password.as_deref()) {
-        let message = if query.password.is_some() {
-            "wrong password"
-        } else {
-            "this file is password protected"
-        };
-        return (
-            StatusCode::UNAUTHORIZED,
-            Html(password_prompt_html(message)),
-        )
-            .into_response();
+    let access = check_access(
+        &state,
+        &headers,
+        file.id.0,
+        file.owner_id,
+        file.password_hash.as_deref(),
+        requester.as_ref(),
+        query.password.as_deref(),
+    )
+    .await;
+    match access {
+        Access::Granted => {}
+        Access::Throttled => return too_many_password_attempts(),
+        Access::Denied => {
+            let message = if query.password.is_some() {
+                "wrong password"
+            } else {
+                "this file is password protected"
+            };
+            return (
+                StatusCode::UNAUTHORIZED,
+                Html(password_prompt_html(message)),
+            )
+                .into_response();
+        }
     }
 
     // A readable, in-page view for text pastes (pasted snippets, or any

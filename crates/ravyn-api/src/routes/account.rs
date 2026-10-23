@@ -56,7 +56,7 @@ pub async fn login(
         }
     };
 
-    if !core_auth::verify_password(&body.password, &user.password_hash) {
+    if !crate::auth::verify_password(&body.password, &user.password_hash).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
@@ -157,8 +157,11 @@ async fn redeem_recovery_code(state: &AppState, user: &User, code: &str) -> bool
     if !user.totp_recovery_codes.contains(&hash) {
         return false;
     }
-    let _ = state.db.consume_recovery_code(user.id, &hash).await;
-    true
+    state
+        .db
+        .consume_recovery_code(user.id, &hash)
+        .await
+        .unwrap_or(false)
 }
 
 /// Creates a session for `user_id` and sets its cookie — shared by `login`
@@ -177,11 +180,16 @@ async fn new_session_response(state: &AppState, user_id: UserId) -> Response {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    // `.secure(true)` should be set once this sits behind a TLS-terminating
-    // reverse proxy; left off here so local `http://` development still works.
+    // Secure whenever the instance is served over https, plain http stays
+    // usable for local development.
+    let secure = state
+        .public_url
+        .as_deref()
+        .is_some_and(|url| url.starts_with("https://"));
     let cookie = Cookie::build((SESSION_COOKIE, token))
         .path("/")
         .http_only(true)
+        .secure(secure)
         .same_site(SameSite::Lax)
         .max_age(SESSION_LIFETIME)
         .build();
@@ -278,7 +286,21 @@ pub async fn register(
         }
     }
 
-    let password_hash = match core_auth::hash_password(&body.password) {
+    if let Some(invite_id) = redeemed_invite {
+        match state.db.claim_invite(invite_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (StatusCode::FORBIDDEN, "invalid or already-used invite code")
+                    .into_response()
+            }
+            Err(err) => {
+                tracing::error!(%err, "failed to claim invite");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    }
+
+    let password_hash = match crate::auth::hash_password(&body.password).await {
         Ok(hash) => hash,
         Err(err) => {
             tracing::error!(%err, "failed to hash password");
@@ -298,6 +320,12 @@ pub async fn register(
     };
 
     if let Err(err) = state.db.create_user(&user).await {
+        if let Some(invite_id) = redeemed_invite {
+            let _ = state.db.release_invite(invite_id).await;
+        }
+        if err.is_unique_violation() {
+            return (StatusCode::CONFLICT, "username already taken").into_response();
+        }
         tracing::error!(%err, "failed to create user");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -377,9 +405,10 @@ pub struct ChangePasswordRequest {
 pub async fn change_password(
     AuthedUser(user): AuthedUser,
     State(state): State<AppState>,
+    jar: CookieJar,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Response {
-    if !core_auth::verify_password(&body.current_password, &user.password_hash) {
+    if !crate::auth::verify_password(&body.current_password, &user.password_hash).await {
         return (StatusCode::UNAUTHORIZED, "current password is incorrect").into_response();
     }
 
@@ -387,7 +416,7 @@ pub async fn change_password(
         return (StatusCode::BAD_REQUEST, "new password is required").into_response();
     }
 
-    let password_hash = match core_auth::hash_password(&body.new_password) {
+    let password_hash = match crate::auth::hash_password(&body.new_password).await {
         Ok(hash) => hash,
         Err(err) => {
             tracing::error!(%err, "failed to hash password");
@@ -398,6 +427,19 @@ pub async fn change_password(
     if let Err(err) = state.db.set_password_hash(user.id, password_hash).await {
         tracing::error!(%err, "failed to save new password");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    // Anyone else signed in as this user, e.g. with a stolen cookie, is
+    // signed out. API tokens are left alone so ShareX keeps working.
+    let current = jar
+        .get(SESSION_COOKIE)
+        .map(|cookie| core_auth::hash_token(cookie.value()));
+    if let Err(err) = state
+        .db
+        .delete_other_sessions(user.id, current.as_deref())
+        .await
+    {
+        tracing::warn!(%err, "failed to revoke other sessions");
     }
 
     let _ = state
@@ -511,7 +553,7 @@ pub async fn disable_totp(
     State(state): State<AppState>,
     Json(body): Json<DisableTotpRequest>,
 ) -> Response {
-    if !core_auth::verify_password(&body.password, &user.password_hash) {
+    if !crate::auth::verify_password(&body.password, &user.password_hash).await {
         return (StatusCode::UNAUTHORIZED, "current password is incorrect").into_response();
     }
 
@@ -1428,6 +1470,16 @@ pub async fn list_activity(
         Err(err) => {
             tracing::error!(%err, "failed to list activity log");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn run_session_sweep(state: AppState) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+    loop {
+        ticker.tick().await;
+        if let Err(err) = state.db.delete_expired_sessions().await {
+            tracing::warn!(%err, "failed to delete expired sessions");
         }
     }
 }

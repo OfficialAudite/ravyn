@@ -110,8 +110,8 @@ pub(crate) mod ssr {
             .get("x-forwarded-for")
             .and_then(|value| value.to_str().ok())
         {
-            if let Some(first) = forwarded.split(',').next() {
-                let trimmed = first.trim();
+            if let Some(last) = forwarded.rsplit(',').next() {
+                let trimmed = last.trim();
                 if !trimmed.is_empty() {
                     return Some(trimmed.to_string());
                 }

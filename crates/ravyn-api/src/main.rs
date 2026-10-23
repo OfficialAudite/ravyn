@@ -67,6 +67,7 @@ async fn main() {
 
     tokio::spawn(routes::run_expiry_sweep(state.clone()));
     tokio::spawn(routes::run_chunked_upload_sweep(state.clone()));
+    tokio::spawn(routes::run_session_sweep(state.clone()));
     tokio::spawn(rate_limit::run_rate_limit_cleanup(
         state.rate_limiters.clone(),
     ));

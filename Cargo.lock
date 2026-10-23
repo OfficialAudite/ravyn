@@ -2984,6 +2984,7 @@ name = "ravyn-storage"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "futures",
  "object_store",
  "thiserror 2.0.20",
 ]

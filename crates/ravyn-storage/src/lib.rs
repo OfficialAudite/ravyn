@@ -7,7 +7,8 @@ pub use error::StorageError;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use object_store::{path::Path as ObjectPath, ObjectStore, WriteMultipart};
+use futures::{stream::BoxStream, StreamExt, TryStreamExt};
+use object_store::{path::Path as ObjectPath, GetOptions, GetRange, ObjectStore, WriteMultipart};
 
 #[derive(Clone)]
 pub struct Storage {
@@ -57,11 +58,62 @@ impl Storage {
         Ok(result.bytes().await?)
     }
 
+    /// Streams an object, or part of one, without buffering it.
+    pub async fn get_stream(
+        &self,
+        key: &str,
+        range: Option<ByteRange>,
+    ) -> Result<ObjectStream, StorageError> {
+        let path = ObjectPath::from(key);
+        let options = GetOptions {
+            range: range.map(|range| match range {
+                ByteRange::Bounded { start, end } => {
+                    GetRange::Bounded(start as usize..end as usize)
+                }
+                ByteRange::From(start) => GetRange::Offset(start as usize),
+                ByteRange::Last(len) => GetRange::Suffix(len as usize),
+            }),
+            ..Default::default()
+        };
+        let result = self.store.get_opts(&path, options).await?;
+        let total_size = result.meta.size as u64;
+        let start = result.range.start as u64;
+        let end = result.range.end as u64;
+        let body = result.into_stream().map_err(StorageError::from).boxed();
+        Ok(ObjectStream {
+            body,
+            start,
+            end,
+            total_size,
+        })
+    }
+
+    pub async fn size(&self, key: &str) -> Result<u64, StorageError> {
+        let path = ObjectPath::from(key);
+        Ok(self.store.head(&path).await?.size as u64)
+    }
+
     pub async fn delete(&self, key: &str) -> Result<(), StorageError> {
         let path = ObjectPath::from(key);
         self.store.delete(&path).await?;
         Ok(())
     }
+}
+
+/// A byte range to read, `end` exclusive.
+#[derive(Clone, Copy, Debug)]
+pub enum ByteRange {
+    Bounded { start: u64, end: u64 },
+    From(u64),
+    Last(u64),
+}
+
+pub struct ObjectStream {
+    pub body: BoxStream<'static, Result<Bytes, StorageError>>,
+    /// The range actually returned, `end` exclusive.
+    pub start: u64,
+    pub end: u64,
+    pub total_size: u64,
 }
 
 /// An in-progress streaming upload, one chunk at a time. Deliberately

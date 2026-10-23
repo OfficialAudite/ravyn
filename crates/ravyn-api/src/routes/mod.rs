@@ -5,6 +5,7 @@ mod shorten;
 mod uploads;
 mod view;
 
+pub use account::run_session_sweep;
 pub use files::run_expiry_sweep;
 pub use uploads::run_chunked_upload_sweep;
 
@@ -15,12 +16,12 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Router,
 };
-use ravyn_core::{auth as core_auth, File, User};
+use ravyn_core::{File, User, UserId};
 use serde::Serialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::state::AppState;
+use crate::{rate_limit::client_ip, state::AppState};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -163,29 +164,64 @@ impl From<File> for FileSummary {
     }
 }
 
-/// A file is viewable without a password by its owner, or by anyone who
-/// either doesn't need one (none set) or supplied the right one.
-pub fn is_authorized(file: &File, requester: Option<&User>, password: Option<&str>) -> bool {
-    if let Some(user) = requester {
-        if user.id == file.owner_id {
-            return true;
-        }
-    }
+pub enum Access {
+    Granted,
+    Denied,
+    Throttled,
+}
 
-    match &file.password_hash {
-        None => true,
-        Some(hash) => password
-            .map(|candidate| core_auth::verify_password(candidate, hash))
-            .unwrap_or(false),
+/// The owner always gets in, anyone else needs the password if one is set.
+/// Only wrong guesses count against the limiter, so someone streaming a
+/// protected video (one request per seek) never trips it.
+pub async fn check_access(
+    state: &AppState,
+    headers: &HeaderMap,
+    resource: Uuid,
+    owner_id: UserId,
+    password_hash: Option<&str>,
+    requester: Option<&User>,
+    password: Option<&str>,
+) -> Access {
+    if requester.is_some_and(|user| user.id == owner_id) {
+        return Access::Granted;
     }
+    let Some(hash) = password_hash else {
+        return Access::Granted;
+    };
+    let Some(candidate) = password else {
+        return Access::Denied;
+    };
+
+    let limiter = &state.rate_limiters.resource_password;
+    let key = format!("{}:{resource}", client_ip(headers));
+    if limiter.is_blocked(&key) {
+        return Access::Throttled;
+    }
+    if crate::auth::verify_password(candidate, hash).await {
+        Access::Granted
+    } else {
+        limiter.check(&key);
+        Access::Denied
+    }
+}
+
+pub fn too_many_password_attempts() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many wrong passwords, try again later",
+    )
+        .into_response()
 }
 
 /// Hashes a password for storage, treating an empty string the same as
 /// "no password" (clears it). Shared by files' and folders' password
 /// endpoints.
-pub fn hash_optional_password(password: Option<String>) -> Result<Option<String>, StatusCode> {
+pub async fn hash_optional_password(
+    password: Option<String>,
+) -> Result<Option<String>, StatusCode> {
     match password.filter(|p| !p.is_empty()) {
-        Some(password) => core_auth::hash_password(&password)
+        Some(password) => crate::auth::hash_password(&password)
+            .await
             .map(Some)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
         None => Ok(None),

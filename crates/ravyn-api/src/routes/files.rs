@@ -1,18 +1,20 @@
 use axum::{
+    body::{Body, Bytes},
     extract::{Multipart, Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     Json,
 };
 use ravyn_core::{File, FileId, FolderId, UserId};
+use ravyn_storage::ByteRange;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    hash_optional_password, is_authorized, password_prompt_html, resolve_public_base_url,
-    FileSummary,
+    check_access, hash_optional_password, password_prompt_html, resolve_public_base_url,
+    too_many_password_attempts, Access, FileSummary,
 };
 use crate::{auth::AuthedUser, state::AppState};
 
@@ -21,52 +23,55 @@ pub struct AccessQuery {
     password: Option<String>,
 }
 
+/// Images up to this size are held in memory for EXIF stripping,
+/// compression and thumbnailing. Anything larger is streamed to storage
+/// untouched, so a fake `image/*` upload can't pin gigabytes of RAM.
+pub(super) const MAX_BUFFERED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
 pub(super) fn thumbnail_key(id: FileId) -> String {
     format!("{}.avif", id.0)
 }
 
-/// Whether serving this content type as the direct response to a
-/// top-level navigation (someone opening the link itself, not an `<img>`/
-/// `<video>` embedding it) would let an uploader's own markup or script
-/// run as if it were part of this site. `content_type` comes straight
-/// from whatever the uploader's client declared at upload time
-/// (`save_uploaded_part`), so it's attacker-controlled: a file uploaded
-/// with `Content-Type: text/html` and a `<script>` body would otherwise
-/// execute with this origin's session cookie in scope for anyone who
-/// opens it directly. An `<img>`/`<video>`/`<audio>` element never
-/// executes script from what it loads regardless of type, so this only
-/// needs to guard the direct-navigation case, not image previews
-/// elsewhere in the app - an SVG still renders fine as an `<img>`.
-fn unsafe_for_inline_navigation(content_type: &str) -> bool {
-    matches!(
-        content_type,
-        "text/html" | "application/xhtml+xml" | "image/svg+xml" | "text/xml" | "application/xml"
-    )
-}
-
-/// Adds `X-Content-Type-Options: nosniff` always, and a `Content-Disposition`
-/// carrying the file's real name (extension included) - `attachment` for
-/// anything `unsafe_for_inline_navigation` flags, `inline` otherwise. Either
-/// way the `filename` param is what the browser saves the file as, so a type
-/// it can't render inline (an `.apk`, say) still downloads under its real
-/// name instead of falling back to the bare, extension-less id in the URL.
-/// `inline` for the safe majority preserves today's behavior for images,
-/// video, audio, PDFs, and the like - the browser previews them exactly as
-/// it did with no header at all, since it only downloads what it can't
-/// render inline regardless of the disposition type. Shared by every route
-/// that serves a file's original bytes (`GET /files/{id}`, and `/v/{id}`'s
-/// redirect ends up here too), so the decision only has to be made in one
-/// place.
+/// `Content-Type` is uploader-controlled, so only a small allowlist is
+/// shown inline, and the sandbox CSP keeps anything that slips through
+/// from running script on this origin. Chrome's PDF viewer refuses to
+/// render under `sandbox`, so PDFs get the CSP without it.
 fn file_response_headers(content_type: &str, original_name: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    let content_type = ravyn_core::normalize_content_type(content_type);
 
-    let disposition = if unsafe_for_inline_navigation(content_type) {
-        "attachment"
+    if let Ok(value) = content_type.parse() {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    let csp = if content_type == "application/pdf" {
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
     } else {
-        "inline"
+        "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox"
     };
-    let safe_name = original_name.replace(['"', '\\', '\r', '\n'], "_");
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(csp),
+    );
+
+    let disposition = if ravyn_core::is_inline_safe(&content_type) {
+        "inline"
+    } else {
+        "attachment"
+    };
+    let safe_name: String = original_name
+        .chars()
+        .map(|c| {
+            if c.is_control() || c == '"' || c == '\\' {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
     let value = format!("{disposition}; filename=\"{safe_name}\"");
     if let Ok(value) = value.parse() {
         headers.insert(header::CONTENT_DISPOSITION, value);
@@ -75,11 +80,75 @@ fn file_response_headers(content_type: &str, original_name: &str) -> HeaderMap {
     headers
 }
 
+/// Parses a single `bytes=` range against a known size. `Ok(None)` means
+/// serve the whole file (no header, or a form we don't support, such as
+/// multiple ranges). `Err(())` means the range can't be satisfied.
+fn parse_range(value: &str, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(spec) = value.trim().strip_prefix("bytes=") else {
+        return Ok(None);
+    };
+    if spec.contains(',') {
+        return Ok(None);
+    }
+    let Some((start, end)) = spec.split_once('-') else {
+        return Ok(None);
+    };
+    let (start, end) = (start.trim(), end.trim());
+
+    let range = match (start.is_empty(), end.is_empty()) {
+        (true, true) => return Ok(None),
+        (true, false) => {
+            let len: u64 = end.parse().map_err(|_| ())?;
+            if len == 0 {
+                return Err(());
+            }
+            (size.saturating_sub(len), size)
+        }
+        (false, _) => {
+            let start: u64 = start.parse().map_err(|_| ())?;
+            let end = if end.is_empty() {
+                size
+            } else {
+                end.parse::<u64>()
+                    .map_err(|_| ())?
+                    .saturating_add(1)
+                    .min(size)
+            };
+            (start, end)
+        }
+    };
+
+    if range.0 >= range.1 {
+        return Err(());
+    }
+    Ok(Some(range))
+}
+
+async fn file_access(
+    state: &AppState,
+    headers: &HeaderMap,
+    file: &File,
+    requester: Option<&ravyn_core::User>,
+    query: &AccessQuery,
+) -> Access {
+    check_access(
+        state,
+        headers,
+        file.id.0,
+        file.owner_id,
+        file.password_hash.as_deref(),
+        requester,
+        query.password.as_deref(),
+    )
+    .await
+}
+
 pub async fn get_file(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Query(query): Query<AccessQuery>,
     requester: Option<AuthedUser>,
+    request_headers: HeaderMap,
 ) -> Response {
     let file = match state.db.get_file(FileId(id)).await {
         Ok(Some(file)) => file,
@@ -91,30 +160,97 @@ pub async fn get_file(
     };
 
     let requester = requester.map(|AuthedUser(user)| user);
-    if !is_authorized(&file, requester.as_ref(), query.password.as_deref()) {
-        let message = if query.password.is_some() {
-            "wrong password"
-        } else {
-            "this file is password protected"
-        };
-        return (
-            StatusCode::UNAUTHORIZED,
-            Html(password_prompt_html(message)),
-        )
-            .into_response();
+    match file_access(&state, &request_headers, &file, requester.as_ref(), &query).await {
+        Access::Granted => {}
+        Access::Throttled => return too_many_password_attempts(),
+        Access::Denied => {
+            let message = if query.password.is_some() {
+                "wrong password"
+            } else {
+                "this file is password protected"
+            };
+            return (
+                StatusCode::UNAUTHORIZED,
+                Html(password_prompt_html(message)),
+            )
+                .into_response();
+        }
     }
 
-    let bytes = match state.storage.get(&file.storage_key).await {
-        Ok(bytes) => bytes,
+    let mut headers = file_response_headers(&file.content_type, &file.original_name);
+    let etag = format!("\"{}\"", file.sha256);
+    if let Ok(value) = etag.parse() {
+        headers.insert(header::ETAG, value);
+    }
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+
+    let not_modified = request_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|tag| tag.trim() == etag));
+    if not_modified {
+        return (StatusCode::NOT_MODIFIED, headers).into_response();
+    }
+
+    let size = file.size_bytes;
+    let range = match request_headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| parse_range(value, size))
+    {
+        None | Some(Ok(None)) => None,
+        Some(Ok(Some(range))) => Some(range),
+        Some(Err(())) => {
+            if let Ok(value) = format!("bytes */{size}").parse() {
+                headers.insert(header::CONTENT_RANGE, value);
+            }
+            return (StatusCode::RANGE_NOT_SATISFIABLE, headers).into_response();
+        }
+    };
+
+    // An empty object can't be read with a range at all, so skip asking.
+    let storage_range = match range {
+        Some((start, end)) => Some(ByteRange::Bounded { start, end }),
+        None if size == 0 => return (headers, Body::empty()).into_response(),
+        None => None,
+    };
+
+    let object = match state
+        .storage
+        .get_stream(&file.storage_key, storage_range)
+        .await
+    {
+        Ok(object) => object,
         Err(err) => {
             tracing::error!(%err, "failed to read file from storage");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
 
-    let mut headers = file_response_headers(&file.content_type, &file.original_name);
-    headers.insert(header::CONTENT_TYPE, file.content_type.parse().unwrap());
-    (headers, bytes).into_response()
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from(object.end - object.start),
+    );
+    let status = if range.is_some() {
+        let value = format!(
+            "bytes {}-{}/{}",
+            object.start,
+            object.end - 1,
+            object.total_size
+        );
+        if let Ok(value) = value.parse() {
+            headers.insert(header::CONTENT_RANGE, value);
+        }
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+
+    (status, headers, Body::from_stream(object.body)).into_response()
 }
 
 /// A small local-disk preview, generated at upload time for images. Kept
@@ -125,6 +261,7 @@ pub async fn get_file_thumbnail(
     Path(id): Path<Uuid>,
     Query(query): Query<AccessQuery>,
     requester: Option<AuthedUser>,
+    headers: HeaderMap,
 ) -> Response {
     let file = match state.db.get_file(FileId(id)).await {
         Ok(Some(file)) => file,
@@ -136,8 +273,10 @@ pub async fn get_file_thumbnail(
     };
 
     let requester = requester.map(|AuthedUser(user)| user);
-    if !is_authorized(&file, requester.as_ref(), query.password.as_deref()) {
-        return StatusCode::FORBIDDEN.into_response();
+    match file_access(&state, &headers, &file, requester.as_ref(), &query).await {
+        Access::Granted => {}
+        Access::Throttled => return too_many_password_attempts(),
+        Access::Denied => return StatusCode::FORBIDDEN.into_response(),
     }
 
     match state.thumbnails.get(&thumbnail_key(file.id)).await {
@@ -157,20 +296,18 @@ pub async fn get_file_thumbnail(
 /// encode itself cheap regardless of the original's size, and awaiting it
 /// guarantees a file never shows up in a list before its thumbnail exists
 /// (a backgrounded version of this raced the dashboard's first render).
-pub(super) async fn generate_thumbnail(state: &AppState, id: FileId, bytes: &[u8]) {
-    let Ok(image) = image::load_from_memory(bytes) else {
+pub(super) async fn generate_thumbnail(state: &AppState, id: FileId, bytes: Bytes) {
+    let encoded = tokio::task::spawn_blocking(move || {
+        let image = image::load_from_memory(&bytes).ok()?;
+        let mut avif = Vec::new();
+        let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut avif, 6, 70);
+        image.thumbnail(400, 400).write_with_encoder(encoder).ok()?;
+        Some(avif)
+    })
+    .await;
+    let Ok(Some(avif)) = encoded else {
         return;
     };
-
-    let mut avif = Vec::new();
-    let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(&mut avif, 6, 70);
-    if image
-        .thumbnail(400, 400)
-        .write_with_encoder(encoder)
-        .is_err()
-    {
-        return;
-    }
 
     if let Err(err) = state.thumbnails.put(&thumbnail_key(id), avif.into()).await {
         tracing::warn!(%err, "failed to store thumbnail");
@@ -186,7 +323,7 @@ pub(super) async fn generate_thumbnail(state: &AppState, id: FileId, bytes: &[u8
 /// re-encoding the image, so this never touches pixel data or
 /// recompresses — the file this returns is byte-identical to the original
 /// except for the removed EXIF segment.
-fn strip_exif(bytes: axum::body::Bytes) -> axum::body::Bytes {
+fn strip_exif(bytes: Bytes) -> Bytes {
     use img_parts::ImageEXIF;
 
     let Ok(Some(mut image)) = img_parts::DynImage::from_bytes(bytes.clone()) else {
@@ -206,7 +343,18 @@ fn strip_exif(bytes: axum::body::Bytes) -> axum::body::Bytes {
 /// these two formats), not something applied silently. `None` on any
 /// failure to decode or encode, left to the caller to fall back to the
 /// original bytes untouched.
-fn compress_image(
+async fn compress_image(
+    bytes: Bytes,
+    format: ravyn_core::ImageCompressionFormat,
+    quality: u8,
+) -> Option<Vec<u8>> {
+    tokio::task::spawn_blocking(move || encode_image(&bytes, format, quality))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn encode_image(
     bytes: &[u8],
     format: ravyn_core::ImageCompressionFormat,
     quality: u8,
@@ -253,12 +401,9 @@ fn replace_extension(name: &str, new_extension: &str) -> String {
 /// sends one request with several parts when you drop multiple files at
 /// once, ShareX always sends exactly one.
 ///
-/// Images go through `save_buffered_part`: thumbnailing needs the whole
-/// image decoded in memory regardless, and images are small enough that
-/// buffering them costs nothing extra. Everything else — video in
-/// particular, which is exactly what people hit multi-gigabyte uploads
-/// with — goes through `save_streamed_part`, which never holds more than
-/// one chunk of the file in memory at a time.
+/// Images up to `MAX_BUFFERED_IMAGE_BYTES` go through `save_buffered_part`,
+/// since EXIF stripping and thumbnailing need the whole file. Everything
+/// else goes through `save_streamed_part`, one chunk at a time.
 async fn save_uploaded_part(
     state: &AppState,
     owner_id: ravyn_core::UserId,
@@ -267,10 +412,7 @@ async fn save_uploaded_part(
     compress_quality_override: Option<u8>,
 ) -> Result<File, (StatusCode, String)> {
     let uploaded_name = field.file_name().unwrap_or("upload").to_string();
-    let content_type = field
-        .content_type()
-        .unwrap_or("application/octet-stream")
-        .to_string();
+    let content_type = ravyn_core::normalize_content_type(field.content_type().unwrap_or(""));
 
     // Instance-wide, admin-configurable: what a freshly uploaded file gets
     // called by default. Falls back to keeping the uploader's own filename
@@ -316,10 +458,35 @@ async fn save_uploaded_part(
             }
         };
 
+        let mut field = field;
+        let mut chunks = Vec::new();
+        let mut buffered_len = 0;
+        loop {
+            let chunk = match field.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(err) => return Err((StatusCode::BAD_REQUEST, err.to_string())),
+            };
+            buffered_len += chunk.len();
+            chunks.push(chunk);
+            if buffered_len > MAX_BUFFERED_IMAGE_BYTES {
+                return save_streamed_part(
+                    state,
+                    owner_id,
+                    field,
+                    chunks,
+                    original_name,
+                    content_type,
+                    expires_at,
+                )
+                .await;
+            }
+        }
+
         save_buffered_part(
             state,
             owner_id,
-            field,
+            Bytes::from(chunks.concat()),
             original_name,
             content_type,
             expires_at,
@@ -331,6 +498,7 @@ async fn save_uploaded_part(
             state,
             owner_id,
             field,
+            Vec::new(),
             original_name,
             content_type,
             expires_at,
@@ -342,17 +510,12 @@ async fn save_uploaded_part(
 async fn save_buffered_part(
     state: &AppState,
     owner_id: ravyn_core::UserId,
-    field: axum::extract::multipart::Field<'_>,
+    bytes: Bytes,
     original_name: String,
     content_type: String,
     expires_at: Option<OffsetDateTime>,
     compression: Option<(ravyn_core::ImageCompressionFormat, u8)>,
 ) -> Result<File, (StatusCode, String)> {
-    let bytes = field
-        .bytes()
-        .await
-        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
-
     match state.db.get_max_storage_bytes(owner_id).await {
         Ok(Some(max)) => {
             let used = state.db.get_storage_usage(owner_id).await.map_err(|err| {
@@ -395,7 +558,7 @@ async fn save_buffered_part(
     // outside what this build supports) uploads untouched rather than
     // failing over what's an optional size trade-off to begin with.
     let (bytes, content_type, original_name) = match compression {
-        Some((format, quality)) => match compress_image(&bytes, format, quality) {
+        Some((format, quality)) => match compress_image(bytes.clone(), format, quality).await {
             Some(compressed) => (
                 compressed.into(),
                 format.content_type().to_string(),
@@ -444,7 +607,7 @@ async fn save_buffered_part(
         )
     })?;
 
-    generate_thumbnail(state, file.id, &bytes).await;
+    generate_thumbnail(state, file.id, bytes).await;
 
     Ok(file)
 }
@@ -462,6 +625,7 @@ async fn save_streamed_part(
     state: &AppState,
     owner_id: ravyn_core::UserId,
     mut field: axum::extract::multipart::Field<'_>,
+    prefix: Vec<Bytes>,
     original_name: String,
     content_type: String,
     expires_at: Option<OffsetDateTime>,
@@ -509,8 +673,13 @@ async fn save_streamed_part(
     let mut hasher = Sha256::new();
     let mut size_bytes: u64 = 0;
 
+    let mut prefix = prefix.into_iter();
     loop {
-        let chunk = match field.chunk().await {
+        let next = match prefix.next() {
+            Some(chunk) => Ok(Some(chunk)),
+            None => field.chunk().await,
+        };
+        let chunk = match next {
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
             Err(err) => {
@@ -533,6 +702,7 @@ async fn save_streamed_part(
         hasher.update(&chunk);
         if let Err(err) = upload.write_chunk(chunk).await {
             tracing::error!(%err, "failed to write upload chunk");
+            let _ = upload.abort().await;
             return Err(storage_error());
         }
     }
@@ -907,7 +1077,7 @@ pub async fn set_file_password(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let hash = match hash_optional_password(body.password) {
+    let hash = match hash_optional_password(body.password).await {
         Ok(hash) => hash,
         Err(status) => return status.into_response(),
     };
@@ -1075,5 +1245,24 @@ pub async fn run_expiry_sweep(state: AppState) {
                 Err(err) => tracing::error!(%err, "failed to delete expired file record"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_range;
+
+    #[test]
+    fn ranges() {
+        assert_eq!(parse_range("bytes=0-99", 1000), Ok(Some((0, 100))));
+        assert_eq!(parse_range("bytes=500-", 1000), Ok(Some((500, 1000))));
+        assert_eq!(parse_range("bytes=-100", 1000), Ok(Some((900, 1000))));
+        assert_eq!(parse_range("bytes=900-5000", 1000), Ok(Some((900, 1000))));
+        assert_eq!(parse_range("bytes=0-1,5-9", 1000), Ok(None));
+        assert_eq!(parse_range("items=0-1", 1000), Ok(None));
+        assert_eq!(parse_range("bytes=1000-", 1000), Err(()));
+        assert_eq!(parse_range("bytes=5-2", 1000), Err(()));
+        assert_eq!(parse_range("bytes=-0", 1000), Err(()));
+        assert_eq!(parse_range("bytes=abc-", 1000), Err(()));
     }
 }

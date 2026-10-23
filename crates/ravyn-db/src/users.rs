@@ -228,22 +228,24 @@ impl Db {
         Ok(())
     }
 
-    /// Removes one code from a user's recovery codes — redeeming one is a
-    /// single use. `array_remove` rather than fetch-modify-write, so a
-    /// concurrent redemption of a different code can never race this one
-    /// into overwriting it.
+    /// Removes one code from a user's recovery codes, returning whether it
+    /// was still there. Only one of two concurrent redemptions of the same
+    /// code can see `true`.
     pub async fn consume_recovery_code(
         &self,
         user_id: UserId,
         code_hash: &str,
-    ) -> Result<(), DbError> {
-        sqlx::query("update users set totp_recovery_codes = array_remove(totp_recovery_codes, $2) where id = $1")
-            .bind(user_id.0)
-            .bind(code_hash)
-            .execute(&self.pool)
-            .await?;
+    ) -> Result<bool, DbError> {
+        let result = sqlx::query(
+            "update users set totp_recovery_codes = array_remove(totp_recovery_codes, $2)
+             where id = $1 and $2 = any(totp_recovery_codes)",
+        )
+        .bind(user_id.0)
+        .bind(code_hash)
+        .execute(&self.pool)
+        .await?;
 
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn get_embed_settings(&self, user_id: UserId) -> Result<EmbedSettings, DbError> {
