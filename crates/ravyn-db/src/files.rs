@@ -39,7 +39,45 @@ impl From<FileRow> for File {
     }
 }
 
+/// Counts and bytes, bucketed the same way the dashboard's type filter is.
+#[derive(Debug, Default, sqlx::FromRow)]
+pub struct FileStats {
+    pub file_count: i64,
+    pub total_bytes: i64,
+    pub images: i64,
+    pub videos: i64,
+    pub audio: i64,
+    pub documents: i64,
+    pub other: i64,
+}
+
 impl Db {
+    /// One owner's stats, or the whole instance's with `None`.
+    pub async fn file_stats(&self, owner_id: Option<UserId>) -> Result<FileStats, DbError> {
+        let stats = sqlx::query_as::<_, FileStats>(
+            "select
+                count(*) as file_count,
+                coalesce(sum(size_bytes), 0)::bigint as total_bytes,
+                count(*) filter (where content_type like 'image/%') as images,
+                count(*) filter (where content_type like 'video/%') as videos,
+                count(*) filter (where content_type like 'audio/%') as audio,
+                count(*) filter (where content_type = 'application/pdf'
+                                    or content_type like 'text/%') as documents,
+                count(*) filter (where content_type not like 'image/%'
+                                   and content_type not like 'video/%'
+                                   and content_type not like 'audio/%'
+                                   and content_type <> 'application/pdf'
+                                   and content_type not like 'text/%') as other
+             from files
+             where $1::uuid is null or owner_id = $1",
+        )
+        .bind(owner_id.map(|id| id.0))
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(stats)
+    }
+
     pub async fn insert_file(&self, file: &File) -> Result<(), DbError> {
         sqlx::query(
             "insert into files (id, owner_id, original_name, storage_key, content_type, size_bytes, sha256, folder_id, password_hash, created_at, expires_at, tags)

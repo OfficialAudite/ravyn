@@ -1,15 +1,17 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
-use ravyn_core::{auth as core_auth, Folder, FolderId, User};
+use ravyn_core::{Folder, FolderId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{hash_optional_password, FileSummary};
+use super::{
+    check_access, hash_optional_password, too_many_password_attempts, Access, FileSummary,
+};
 use crate::{auth::AuthedUser, state::AppState};
 
 #[derive(Deserialize)]
@@ -23,7 +25,7 @@ pub async fn create_folder(
     State(state): State<AppState>,
     Json(body): Json<CreateFolderRequest>,
 ) -> Response {
-    let password_hash = match hash_optional_password(body.password) {
+    let password_hash = match hash_optional_password(body.password).await {
         Ok(hash) => hash,
         Err(status) => return status.into_response(),
     };
@@ -130,7 +132,7 @@ pub async fn set_folder_password(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    let hash = match hash_optional_password(body.password) {
+    let hash = match hash_optional_password(body.password).await {
         Ok(hash) => hash,
         Err(status) => return status.into_response(),
     };
@@ -161,6 +163,7 @@ pub async fn get_folder_files(
     Path(id): Path<Uuid>,
     Query(query): Query<FolderAccessQuery>,
     requester: Option<AuthedUser>,
+    headers: HeaderMap,
 ) -> Response {
     let folder = match state.db.get_folder(FolderId(id)).await {
         Ok(Some(folder)) => folder,
@@ -172,8 +175,20 @@ pub async fn get_folder_files(
     };
 
     let requester = requester.map(|AuthedUser(user)| user);
-    if !is_folder_authorized(&folder, requester.as_ref(), query.password.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    let access = check_access(
+        &state,
+        &headers,
+        folder.id.0,
+        folder.owner_id,
+        folder.password_hash.as_deref(),
+        requester.as_ref(),
+        query.password.as_deref(),
+    )
+    .await;
+    match access {
+        Access::Granted => {}
+        Access::Throttled => return too_many_password_attempts(),
+        Access::Denied => return StatusCode::UNAUTHORIZED.into_response(),
     }
 
     let files = match state.db.list_files_for_folder(folder.id).await {
@@ -189,19 +204,4 @@ pub async fn get_folder_files(
         files: files.into_iter().map(FileSummary::from).collect(),
     })
     .into_response()
-}
-
-fn is_folder_authorized(folder: &Folder, requester: Option<&User>, password: Option<&str>) -> bool {
-    if let Some(user) = requester {
-        if user.id == folder.owner_id {
-            return true;
-        }
-    }
-
-    match &folder.password_hash {
-        None => true,
-        Some(hash) => password
-            .map(|candidate| core_auth::verify_password(candidate, hash))
-            .unwrap_or(false),
-    }
 }

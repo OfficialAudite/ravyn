@@ -67,6 +67,26 @@ impl Db {
         Ok(row.map(Invite::from))
     }
 
+    /// Reserves an unused invite. Only one concurrent caller can win.
+    pub async fn claim_invite(&self, id: InviteId) -> Result<bool, DbError> {
+        let result =
+            sqlx::query("update invites set used_at = now() where id = $1 and used_at is null")
+                .bind(id.0)
+                .execute(&self.pool)
+                .await?;
+
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn release_invite(&self, id: InviteId) -> Result<(), DbError> {
+        sqlx::query("update invites set used_at = null, used_by = null where id = $1")
+            .bind(id.0)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn mark_invite_used(&self, id: InviteId, used_by: UserId) -> Result<(), DbError> {
         sqlx::query("update invites set used_by = $2, used_at = now() where id = $1")
             .bind(id.0)

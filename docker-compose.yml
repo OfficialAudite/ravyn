@@ -28,6 +28,9 @@ services:
       # actually sees carries `ravyn-web`'s own internal address, not the
       # domain the browser used.
       RAVYN_PUBLIC_API_URL: http://localhost:3000
+      # Lets webhooks reach private/local addresses (ntfy, Gotify on your
+      # own network). Off by default, since any user can set a webhook URL.
+      # RAVYN_ALLOW_PRIVATE_WEBHOOKS: "true"
     ports:
       - "3000:3000"
     volumes:

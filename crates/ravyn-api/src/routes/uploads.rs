@@ -27,6 +27,15 @@ pub const CHUNK_SIZE: u32 = 8 * 1024 * 1024;
 /// abandoned upload doesn't sit in storage forever.
 const ABANDONED_UPLOAD_MAX_AGE: time::Duration = time::Duration::hours(24);
 
+fn expected_part_len(total_size: i64, part_number: i32) -> Option<i64> {
+    let chunk = CHUNK_SIZE as i64;
+    let start = (part_number as i64 - 1).checked_mul(chunk)?;
+    if part_number < 1 || start >= total_size {
+        return None;
+    }
+    Some(chunk.min(total_size - start))
+}
+
 fn chunk_storage_key(owner_id: Uuid, upload_id: Uuid, part_number: i32) -> String {
     format!("chunks/{owner_id}/{upload_id}/{part_number}")
 }
@@ -68,19 +77,13 @@ pub async fn init_chunked_upload(
         }
     }
 
-    let naming_scheme = state
-        .db
-        .get_naming_scheme()
-        .await
-        .unwrap_or(ravyn_core::NamingScheme::Original);
-    let random_name_length = state.db.get_random_name_length().await.unwrap_or(8);
-    let original_name = naming_scheme.generate(&body.original_name, random_name_length as usize);
+    let settings = state.db.get_upload_settings().await.unwrap_or_default();
+    let original_name = settings
+        .naming_scheme
+        .generate(&body.original_name, settings.random_name_length);
 
-    let expires_at = state
-        .db
-        .get_default_expiry_preset()
-        .await
-        .unwrap_or(ravyn_core::ExpiryPreset::Never)
+    let expires_at = settings
+        .default_expiry
         .to_duration()
         .map(|duration| OffsetDateTime::now_utc() + duration);
 
@@ -88,7 +91,7 @@ pub async fn init_chunked_upload(
         id: ChunkedUploadId::new(),
         owner_id: user.id,
         original_name,
-        content_type: body.content_type,
+        content_type: ravyn_core::normalize_content_type(&body.content_type),
         total_size: body.total_size,
         created_at: OffsetDateTime::now_utc(),
         expires_at,
@@ -128,6 +131,19 @@ pub async fn upload_chunk(
 
     if upload.owner_id != user.id {
         return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // Every part's size is fixed by the declared total, so nothing beyond
+    // what the quota check in `init_chunked_upload` allowed can be stored.
+    let Some(expected_len) = expected_part_len(upload.total_size, part_number) else {
+        return (StatusCode::BAD_REQUEST, "part number out of range").into_response();
+    };
+    if body.len() as i64 != expected_len {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("part {part_number} must be exactly {expected_len} bytes"),
+        )
+            .into_response();
     }
 
     let key = chunk_storage_key(user.id.0, id, part_number);
@@ -312,9 +328,11 @@ pub async fn complete_chunked_upload(
     // reassembly above deliberately never held onto at once - a single
     // extra full read here, same tradeoff `save_buffered_part` already
     // makes for every image, just paid once instead of during each chunk.
-    if file.content_type.starts_with("image/") {
+    if file.content_type.starts_with("image/")
+        && file.size_bytes <= super::files::MAX_BUFFERED_IMAGE_BYTES as u64
+    {
         if let Ok(bytes) = state.storage.get(&file.storage_key).await {
-            super::files::generate_thumbnail(&state, file.id, &bytes).await;
+            super::files::generate_thumbnail(&state, file.id, bytes).await;
         }
     }
 
@@ -401,5 +419,23 @@ pub async fn run_chunked_upload_sweep(state: AppState) {
                 Err(err) => tracing::error!(%err, "failed to delete abandoned chunked upload"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{expected_part_len, CHUNK_SIZE};
+
+    #[test]
+    fn part_lengths() {
+        let chunk = CHUNK_SIZE as i64;
+        let total = chunk * 2 + 10;
+        assert_eq!(expected_part_len(total, 1), Some(chunk));
+        assert_eq!(expected_part_len(total, 3), Some(10));
+        assert_eq!(expected_part_len(total, 4), None);
+        assert_eq!(expected_part_len(total, 0), None);
+        assert_eq!(expected_part_len(total, -5), None);
+        assert_eq!(expected_part_len(chunk, 1), Some(chunk));
+        assert_eq!(expected_part_len(chunk, 2), None);
     }
 }

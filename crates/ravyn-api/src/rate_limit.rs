@@ -48,6 +48,15 @@ impl RateLimiter {
         true
     }
 
+    /// Whether `key` is already over the limit, without counting this as
+    /// another attempt.
+    pub fn is_blocked(&self, key: &str) -> bool {
+        let buckets = self.buckets.lock().unwrap();
+        buckets.get(key).is_some_and(|(count, started)| {
+            started.elapsed() <= self.window && *count >= self.max_attempts
+        })
+    }
+
     /// Drops buckets whose window has already elapsed, so a long-running
     /// process doesn't accumulate one entry per IP or username it's ever
     /// seen. Called periodically from `run_rate_limit_cleanup`, not on
@@ -70,6 +79,8 @@ pub struct RateLimiters {
     pub totp: RateLimiter,
     pub register: RateLimiter,
     pub upload: RateLimiter,
+    /// Wrong passwords on a shared file or folder, per client and resource.
+    pub resource_password: RateLimiter,
 }
 
 impl Default for RateLimiters {
@@ -79,6 +90,7 @@ impl Default for RateLimiters {
             totp: RateLimiter::new(10, Duration::from_secs(5 * 60)),
             register: RateLimiter::new(5, Duration::from_secs(60 * 60)),
             upload: RateLimiter::new(60, Duration::from_secs(60)),
+            resource_password: RateLimiter::new(10, Duration::from_secs(5 * 60)),
         }
     }
 }
@@ -89,6 +101,7 @@ impl RateLimiters {
         self.totp.cleanup();
         self.register.cleanup();
         self.upload.cleanup();
+        self.resource_password.cleanup();
     }
 }
 
@@ -104,9 +117,11 @@ pub async fn run_rate_limit_cleanup(limiters: std::sync::Arc<RateLimiters>) {
 }
 
 /// The client's own address, as best as this request's headers can say -
-/// `X-Forwarded-For`'s first entry (set by a reverse proxy, which is how
-/// this app is meant to be deployed - see the README's Docker section),
-/// falling back to `X-Real-IP`, and finally a shared placeholder for a
+/// `X-Forwarded-For`'s last entry, the one appended by the reverse proxy
+/// in front of this app. Earlier entries come from the client itself and
+/// can be anything, so trusting the first one would let anyone dodge the
+/// limiter by sending a fresh fake address per request. Falls back to
+/// `X-Real-IP`, and finally a shared placeholder for a
 /// bare, non-proxied deployment. That fallback means every direct
 /// connection shares one rate-limit bucket rather than being limited
 /// individually - an acceptable gap for a setup this app doesn't actually
@@ -116,8 +131,8 @@ pub fn client_ip(headers: &HeaderMap) -> String {
         .get("x-forwarded-for")
         .and_then(|value| value.to_str().ok())
     {
-        if let Some(first) = forwarded.split(',').next() {
-            let trimmed = first.trim();
+        if let Some(last) = forwarded.rsplit(',').next() {
+            let trimmed = last.trim();
             if !trimmed.is_empty() {
                 return trimmed.to_string();
             }

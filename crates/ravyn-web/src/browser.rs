@@ -173,7 +173,7 @@ const LARGE_FILE_THRESHOLD: u32 = 32 * 1024 * 1024;
 pub fn upload_large_files(
     input_id: &'static str,
     uploading_name: RwSignal<Option<String>>,
-    progress: RwSignal<(u32, u32)>,
+    progress: RwSignal<(u64, u64)>,
     error: RwSignal<Option<String>>,
 ) -> bool {
     #[cfg(feature = "hydrate")]
@@ -209,7 +209,7 @@ pub fn upload_large_files(
             for i in 0..count {
                 let Some(file) = list.get(i) else { continue };
                 uploading_name.set(Some(file.name()));
-                progress.set((0, file.size() as u32));
+                progress.set((0, file.size() as u64));
 
                 match upload_one_large_file(&file, progress).await {
                     Ok(found) => duplicate_of = duplicate_of.or(found),
@@ -241,21 +241,21 @@ pub fn upload_large_files(
 #[cfg(feature = "hydrate")]
 async fn upload_one_large_file(
     file: &web_sys::File,
-    progress: RwSignal<(u32, u32)>,
+    progress: RwSignal<(u64, u64)>,
 ) -> Result<Option<String>, String> {
     let init =
         crate::server_fns::init_chunked_upload(file.name(), file.type_(), file.size() as i64)
             .await
             .map_err(|err| err.to_string())?;
 
-    let total_size = file.size() as u32;
-    let mut offset: u32 = 0;
+    let total_size = file.size() as u64;
+    let mut offset: u64 = 0;
     let mut part_number: i32 = 1;
 
     while offset < total_size {
-        let end = (offset + init.chunk_size).min(total_size);
+        let end = (offset + init.chunk_size as u64).min(total_size);
         let blob = file
-            .slice_with_i32_and_i32(offset as i32, end as i32)
+            .slice_with_f64_and_f64(offset as f64, end as f64)
             .map_err(|_| "failed to read part of the file".to_string())?;
 
         const MAX_ATTEMPTS: u8 = 3;

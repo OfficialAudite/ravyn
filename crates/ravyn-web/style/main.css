@@ -1487,3 +1487,8 @@ input[type="color"] {
     transition: none !important;
   }
 }
+
+.show-more {
+  display: block;
+  margin: 1.5rem auto 0;
+}

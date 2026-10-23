@@ -88,6 +88,10 @@ fn RegisterForm(status: RegistrationStatus) -> impl IntoView {
                     id="reg-username"
                     type="text"
                     autocomplete="username"
+                    required
+                    maxlength="32"
+                    pattern="[A-Za-z0-9._\\-]+"
+                    title="up to 32 letters, digits, '.', '_' or '-'"
                     on:input=move |ev| set_username.set(event_target_value(&ev))
                 />
             </div>

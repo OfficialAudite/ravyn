@@ -1,4 +1,5 @@
 mod auth;
+mod outbound;
 mod rate_limit;
 mod routes;
 mod state;
@@ -49,24 +50,25 @@ async fn main() {
     })
     .expect("failed to initialize thumbnail storage");
 
+    // For homelabs posting to something on their own network (ntfy,
+    // Gotify, a local bot). Off by default, since any user can set a
+    // webhook URL.
+    let allow_private_webhooks = std::env::var("RAVYN_ALLOW_PRIVATE_WEBHOOKS")
+        .is_ok_and(|value| value == "true" || value == "1");
+
     let state = AppState {
         db,
         storage,
         thumbnails,
-        // A timeout matters here specifically because the client posts to
-        // a URL the account owner supplied (a webhook endpoint) — without
-        // one, a target that never responds would leak a spawned task per
-        // upload indefinitely.
-        http: reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .expect("failed to build http client"),
+        http: outbound::webhook_client(allow_private_webhooks),
+        allow_private_webhooks,
         public_url: std::env::var("RAVYN_PUBLIC_API_URL").ok(),
         rate_limiters: Arc::new(RateLimiters::default()),
     };
 
     tokio::spawn(routes::run_expiry_sweep(state.clone()));
     tokio::spawn(routes::run_chunked_upload_sweep(state.clone()));
+    tokio::spawn(routes::run_session_sweep(state.clone()));
     tokio::spawn(rate_limit::run_rate_limit_cleanup(
         state.rate_limiters.clone(),
     ));

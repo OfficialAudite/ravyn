@@ -32,8 +32,10 @@ logging in.
 
 - [Running locally](#running-locally)
 - [Storage backends](#storage-backends)
+- [Serving files safely](#serving-files-safely)
 - [Auth](#auth)
 - [Docker](#docker)
+- [Tests and CI](#tests-and-ci)
 - [Extending it](#extending-it)
 
 ## Running locally
@@ -85,9 +87,33 @@ incoming request's size on both `ravyn-api` and `ravyn-web` (Axum's own default,
 2MB, is nowhere near enough for real files) and needs to match on both, since
 `ravyn-web`'s `/upload` receives the whole request before proxying it on.
 
-Serving is always a passthrough, never a redirect: `GET /files/{id}` reads the bytes
-from wherever they live and streams them back from `ravyn-api` itself, so every link
-stays on your domain no matter which backend is storing the bytes.
+Serving is always a passthrough, never a redirect: `GET /files/{id}` streams the bytes
+from wherever they live back through `ravyn-api` itself, so every link stays on your
+domain no matter which backend is storing them. It supports `Range` requests (video
+seeking, resumable downloads) and sends the file's sha256 as an `ETag`, so a repeat
+view is a `304`.
+
+Images up to 64 MB are held in memory at upload time for EXIF stripping, optional
+compression and thumbnailing. Anything larger, and every other type, is streamed
+straight to storage.
+
+## Serving files safely
+
+Every uploaded file's `Content-Type` comes from the uploader, so `ravyn-api` treats it
+as untrusted:
+
+- It's normalized at upload (`Text/HTML; charset=utf-8` is stored as `text/html`).
+- Only images (not SVG), video, audio, PDF and plain text open inline in the
+  browser. Everything else, HTML and SVG included, is served as a download.
+- Every file response carries `X-Content-Type-Options: nosniff` and a
+  `Content-Security-Policy` with `sandbox`, so nothing an uploader wrote can run
+  script on your domain.
+
+File links are random UUIDs, so they can't be guessed or enumerated. A
+password-protected file shows a prompt that posts the password (it never ends up in
+the URL) and sets a cookie for that one file, valid until the owner changes the
+password. Scripts can still pass `?password=`. Wrong guesses are rate limited per
+client and file.
 
 ## Auth
 
@@ -114,7 +140,16 @@ The settings page has a one-click "download ShareX config" button that fills in 
 fresh token and this instance's URL. [`contrib/sharex/ravyn.sxcu`](contrib/sharex/ravyn.sxcu)
 is a plain reference for configuring ShareX by hand instead.
 
-2FA, per-user quotas, rate limiting, and everything else auth-related is on
+New usernames are up to 32 ASCII letters, digits, `.`, `_` or `-`, and unique
+regardless of case, so nobody can register `Admin` next to `admin` or a look-alike
+with Cyrillic letters. Changing your password signs out every other session (API
+tokens keep working).
+
+Rate limiting keys on the client address from the **last** `X-Forwarded-For` entry,
+the one your reverse proxy appends, so put ravyn behind exactly one proxy that sets it
+(Caddy and nginx both do).
+
+2FA, per-user quotas, and everything else auth-related is on
 [tryravyn.com's features page](https://tryravyn.com/docs/features.html).
 
 ## Docker
@@ -138,12 +173,19 @@ address, not the browser's.
 
 **Deploying behind a real domain**: set both to that domain (`https://your.domain`,
 not `localhost`), this is the single most common misconfiguration after a first
-deploy.
+deploy. With an `https://` URL the session cookie is also marked `Secure`.
+
+**Webhooks** can't target private or local addresses (`localhost`, `10.x`,
+`192.168.x`, cloud metadata endpoints), since any user can set one. If you want to
+notify something on your own network, such as ntfy or Gotify, set
+`RAVYN_ALLOW_PRIVATE_WEBHOOKS=true` on `api`.
 
 **Prebuilt images**: `.github/workflows/docker-publish.yml` builds and pushes
 `ghcr.io/officialaudite/ravyn-api` and `ghcr.io/officialaudite/ravyn-web` on every
 push to `master` (tagged `latest`) and on any `v*` git tag (tagged with that
-version). Swap `build:` for `image: ghcr.io/officialaudite/ravyn-api:latest` (and
+version), but only after the CI checks below pass. The Dockerfiles use
+[cargo-chef](https://github.com/LukeMathWalker/cargo-chef), so dependencies are a
+cached layer and a code change only recompiles ravyn's own crates. Swap `build:` for `image: ghcr.io/officialaudite/ravyn-api:latest` (and
 the same for `web`) in `docker-compose.yml` to run from those instead of building
 locally. A package is private by default the first time it's published, even on a
 public repo, go to the package's own settings on GitHub and make it public, or the
@@ -152,6 +194,21 @@ public repo, go to the package's own settings on GitHub and make it public, or t
 See [tryravyn.com/docs](https://tryravyn.com/docs/) for a from-scratch install guide,
 including a bare-metal path (Postgres + systemd + Caddy, no Docker) for anyone who'd
 rather not run containers.
+
+## Tests and CI
+
+```sh
+cargo test --workspace --features ravyn-web/ssr
+
+# Including the database tests, each against its own throwaway database:
+DATABASE_URL=postgres://localhost/postgres \
+  cargo test --workspace --features ravyn-web/ssr -- --include-ignored
+```
+
+The database tests (`crates/ravyn-db/src/tests.rs`) are `#[ignore]`d by default so
+`cargo test` works without Postgres. `.github/workflows/ci.yml` runs `cargo fmt
+--check`, `clippy -D warnings` for both the server and the wasm build, and every test
+including the database ones, on each pull request and push to `develop`.
 
 ## Extending it
 
