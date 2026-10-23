@@ -77,19 +77,13 @@ pub async fn init_chunked_upload(
         }
     }
 
-    let naming_scheme = state
-        .db
-        .get_naming_scheme()
-        .await
-        .unwrap_or(ravyn_core::NamingScheme::Original);
-    let random_name_length = state.db.get_random_name_length().await.unwrap_or(8);
-    let original_name = naming_scheme.generate(&body.original_name, random_name_length as usize);
+    let settings = state.db.get_upload_settings().await.unwrap_or_default();
+    let original_name = settings
+        .naming_scheme
+        .generate(&body.original_name, settings.random_name_length);
 
-    let expires_at = state
-        .db
-        .get_default_expiry_preset()
-        .await
-        .unwrap_or(ravyn_core::ExpiryPreset::Never)
+    let expires_at = settings
+        .default_expiry
         .to_duration()
         .map(|duration| OffsetDateTime::now_utc() + duration);
 

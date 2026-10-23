@@ -6,6 +6,7 @@ use axum::{
     Json,
 };
 use ravyn_core::{File, FileId, FolderId, UserId};
+use ravyn_db::UploadSettings;
 use ravyn_storage::ByteRange;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -408,32 +409,19 @@ async fn save_uploaded_part(
     state: &AppState,
     owner_id: ravyn_core::UserId,
     field: axum::extract::multipart::Field<'_>,
+    settings: &UploadSettings,
     compress_format_override: Option<Option<ravyn_core::ImageCompressionFormat>>,
     compress_quality_override: Option<u8>,
 ) -> Result<File, (StatusCode, String)> {
     let uploaded_name = field.file_name().unwrap_or("upload").to_string();
     let content_type = ravyn_core::normalize_content_type(field.content_type().unwrap_or(""));
 
-    // Instance-wide, admin-configurable: what a freshly uploaded file gets
-    // called by default. Falls back to keeping the uploader's own filename
-    // on any lookup error, same as every other settings read on this path.
-    let naming_scheme = state
-        .db
-        .get_naming_scheme()
-        .await
-        .unwrap_or(ravyn_core::NamingScheme::Original);
-    let random_name_length = state.db.get_random_name_length().await.unwrap_or(8);
-    let original_name = naming_scheme.generate(&uploaded_name, random_name_length as usize);
-
-    // Same idea, for auto-delete: the instance's default expiry applies
-    // unless the owner sets one of their own afterward (see
-    // `set_file_expiry`) — falls back to no expiry, the safe direction,
-    // rather than the sweep.
-    let expires_at = state
-        .db
-        .get_default_expiry_preset()
-        .await
-        .unwrap_or(ravyn_core::ExpiryPreset::Never)
+    let original_name = settings
+        .naming_scheme
+        .generate(&uploaded_name, settings.random_name_length);
+    // The owner can still change this per file afterwards (`set_file_expiry`).
+    let expires_at = settings
+        .default_expiry
         .to_duration()
         .map(|duration| OffsetDateTime::now_utc() + duration);
 
@@ -448,14 +436,10 @@ async fn save_uploaded_part(
         let compression = match compress_format_override {
             Some(Some(format)) => Some((format, compress_quality_override.unwrap_or(80))),
             Some(None) => None,
-            None => {
-                let (format, quality) = state
-                    .db
-                    .get_compression_settings()
-                    .await
-                    .unwrap_or((None, None));
-                format.map(|format| (format, quality.map(ravyn_core::clamp_quality).unwrap_or(80)))
-            }
+            None => settings.compression_format.map(|format| {
+                let quality = settings.compression_quality.map(ravyn_core::clamp_quality);
+                (format, quality.unwrap_or(80))
+            }),
         };
 
         let mut field = field;
@@ -490,7 +474,10 @@ async fn save_uploaded_part(
             original_name,
             content_type,
             expires_at,
-            compression,
+            ImageProcessing {
+                strip_metadata: settings.strip_exif,
+                compression,
+            },
         )
         .await
     } else {
@@ -507,6 +494,11 @@ async fn save_uploaded_part(
     }
 }
 
+struct ImageProcessing {
+    strip_metadata: bool,
+    compression: Option<(ravyn_core::ImageCompressionFormat, u8)>,
+}
+
 async fn save_buffered_part(
     state: &AppState,
     owner_id: ravyn_core::UserId,
@@ -514,7 +506,7 @@ async fn save_buffered_part(
     original_name: String,
     content_type: String,
     expires_at: Option<OffsetDateTime>,
-    compression: Option<(ravyn_core::ImageCompressionFormat, u8)>,
+    processing: ImageProcessing,
 ) -> Result<File, (StatusCode, String)> {
     match state.db.get_max_storage_bytes(owner_id).await {
         Ok(Some(max)) => {
@@ -545,7 +537,7 @@ async fn save_buffered_part(
     // Quota was already checked against the pre-strip size above — stripping
     // only ever removes bytes, so re-checking after wouldn't change the
     // outcome.
-    let bytes = if state.db.get_strip_exif().await.unwrap_or(true) {
+    let bytes = if processing.strip_metadata {
         strip_exif(bytes)
     } else {
         bytes
@@ -557,7 +549,7 @@ async fn save_buffered_part(
     // path - a source `image` can't decode (an animated GIF, a format
     // outside what this build supports) uploads untouched rather than
     // failing over what's an optional size trade-off to begin with.
-    let (bytes, content_type, original_name) = match compression {
+    let (bytes, content_type, original_name) = match processing.compression {
         Some((format, quality)) => match compress_image(bytes.clone(), format, quality).await {
             Some(compressed) => (
                 compressed.into(),
@@ -840,6 +832,10 @@ pub async fn upload_file(
     }
 
     let base_url = resolve_public_base_url(&state, &headers);
+    let settings = state.db.get_upload_settings().await.unwrap_or_else(|err| {
+        tracing::warn!(%err, "failed to load upload settings, using defaults");
+        UploadSettings::default()
+    });
     let mut outcomes = Vec::new();
 
     // Set by two optional, plain form fields (`compress_format`/
@@ -895,8 +891,15 @@ pub async fn upload_file(
         }
 
         let name = field.file_name().unwrap_or("upload").to_string();
-        let saved =
-            save_uploaded_part(&state, user.id, field, compress_format, compress_quality).await;
+        let saved = save_uploaded_part(
+            &state,
+            user.id,
+            field,
+            &settings,
+            compress_format,
+            compress_quality,
+        )
+        .await;
         let mut duplicate_of = None;
         if let Ok(file) = &saved {
             duplicate_of = state
