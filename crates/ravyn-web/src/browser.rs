@@ -248,35 +248,46 @@ async fn upload_one_large_file(
             .await
             .map_err(|err| err.to_string())?;
 
+    use futures::{StreamExt, TryStreamExt};
+
+    // A few chunks in flight at once instead of one at a time: on a link
+    // with any real latency, a single request spends much of its time
+    // waiting on the round trip rather than actually sending.
+    const PARALLEL_CHUNKS: usize = 4;
+
     let total_size = file.size() as u64;
-    let mut offset: u64 = 0;
-    let mut part_number: i32 = 1;
+    let chunk_size = init.chunk_size as u64;
+    let part_count = total_size.div_ceil(chunk_size) as i32;
+    let upload_id = init.upload_id.as_str();
 
-    while offset < total_size {
-        let end = (offset + init.chunk_size as u64).min(total_size);
-        let blob = file
-            .slice_with_f64_and_f64(offset as f64, end as f64)
-            .map_err(|_| "failed to read part of the file".to_string())?;
+    futures::stream::iter(1..=part_count)
+        .map(Ok)
+        .try_for_each_concurrent(PARALLEL_CHUNKS, |part_number| async move {
+            let start = (part_number as u64 - 1) * chunk_size;
+            let end = (start + chunk_size).min(total_size);
+            let blob = file
+                .slice_with_f64_and_f64(start as f64, end as f64)
+                .map_err(|_| "failed to read part of the file".to_string())?;
 
-        const MAX_ATTEMPTS: u8 = 3;
-        let mut attempt = 0;
-        loop {
-            match upload_one_chunk(&init.upload_id, part_number, &blob).await {
-                Ok(()) => break,
-                Err(err) => {
-                    attempt += 1;
-                    if attempt >= MAX_ATTEMPTS {
-                        return Err(err);
+            const MAX_ATTEMPTS: u8 = 3;
+            let mut attempt = 0;
+            loop {
+                match upload_one_chunk(upload_id, part_number, &blob).await {
+                    Ok(()) => break,
+                    Err(err) => {
+                        attempt += 1;
+                        if attempt >= MAX_ATTEMPTS {
+                            return Err(err);
+                        }
+                        sleep_ms(500).await;
                     }
-                    sleep_ms(500).await;
                 }
             }
-        }
 
-        offset = end;
-        part_number += 1;
-        progress.set((offset, total_size));
-    }
+            progress.update(|(sent, _)| *sent += end - start);
+            Ok(())
+        })
+        .await?;
 
     let completed = crate::server_fns::complete_chunked_upload(init.upload_id)
         .await

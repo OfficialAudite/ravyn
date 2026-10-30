@@ -14,6 +14,7 @@ mod users;
 #[cfg(test)]
 mod tests;
 
+pub use chunked_uploads::ChunkedUploadPart;
 pub use error::DbError;
 pub use files::FileStats;
 pub use settings::UploadSettings;

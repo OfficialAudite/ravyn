@@ -7,6 +7,9 @@ pub enum StorageError {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    #[error("storage backend does not support multipart parts")]
+    NoMultipart,
 }
 
 impl StorageError {

@@ -954,11 +954,7 @@ pub async fn delete_user(
         .await
         .unwrap_or_default();
     for upload in &chunked_uploads {
-        if let Ok(parts) = state.db.list_chunked_upload_parts(upload.id).await {
-            for part in parts {
-                let _ = state.storage.delete(&part.storage_key).await;
-            }
-        }
+        super::uploads::discard_upload_storage(&state, upload).await;
     }
 
     if let Err(err) = state.db.delete_user(target.id).await {
