@@ -5,21 +5,26 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use ravyn_core::{ChunkedUpload, ChunkedUploadId, File, FileId};
+use futures::StreamExt;
+use ravyn_core::{ChunkedUpload, ChunkedUploadId, File, FileId, UserId};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{files::notify_upload_webhook, resolve_public_base_url};
+use super::{
+    files::{generate_thumbnail, notify_upload_webhook, MAX_BUFFERED_IMAGE_BYTES},
+    resolve_public_base_url,
+};
 use crate::{auth::AuthedUser, state::AppState};
+use ravyn_db::ChunkedUploadPart;
 
 /// Chunk size this server hands back from `init_chunked_upload` for the
 /// browser to slice by. `ravyn-web` has its own copy of the size threshold
 /// that decides whether to use this path at all (`ravyn-web` never depends
 /// on `ravyn-api` directly, so nothing here is actually shared code, just
 /// two sides agreeing on the same numbers).
-pub const CHUNK_SIZE: u32 = 8 * 1024 * 1024;
+pub const CHUNK_SIZE: u32 = 16 * 1024 * 1024;
 
 /// How long an incomplete chunked upload's parts stick around before the
 /// sweep (`run_chunked_upload_sweep`) cleans them up - long enough to
@@ -87,6 +92,15 @@ pub async fn init_chunked_upload(
         .to_duration()
         .map(|duration| OffsetDateTime::now_utc() + duration);
 
+    let storage_key = format!("{}/{}", user.id.0, Uuid::new_v4());
+    let multipart_id = match state.storage.create_parts(&storage_key).await {
+        Ok(multipart_id) => multipart_id,
+        Err(err) => {
+            tracing::error!(%err, "failed to start multipart upload");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
     let upload = ChunkedUpload {
         id: ChunkedUploadId::new(),
         owner_id: user.id,
@@ -95,10 +109,13 @@ pub async fn init_chunked_upload(
         total_size: body.total_size,
         created_at: OffsetDateTime::now_utc(),
         expires_at,
+        storage_key: multipart_id.is_some().then_some(storage_key),
+        multipart_id,
     };
 
     if let Err(err) = state.db.create_chunked_upload(&upload).await {
         tracing::error!(%err, "failed to create chunked upload");
+        discard_upload_storage(&state, &upload).await;
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
@@ -146,15 +163,39 @@ pub async fn upload_chunk(
             .into_response();
     }
 
-    let key = chunk_storage_key(user.id.0, id, part_number);
-    if let Err(err) = state.storage.put(&key, body.clone()).await {
-        tracing::error!(%err, "failed to store upload chunk");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
+    let size = body.len() as i64;
+    let stored = match (&upload.storage_key, &upload.multipart_id) {
+        (Some(key), Some(multipart_id)) => state
+            .storage
+            .put_part(key, multipart_id, part_number, body)
+            .await
+            .map(|part_id| (None, Some(part_id))),
+        _ => {
+            let key = chunk_storage_key(user.id.0, id, part_number);
+            state
+                .storage
+                .put(&key, body)
+                .await
+                .map(|()| (Some(key), None))
+        }
+    };
+    let (storage_key, part_id) = match stored {
+        Ok(stored) => stored,
+        Err(err) => {
+            tracing::error!(%err, "failed to store upload chunk");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     if let Err(err) = state
         .db
-        .upsert_chunked_upload_part(upload.id, part_number, &key, body.len() as i64)
+        .upsert_chunked_upload_part(
+            upload.id,
+            part_number,
+            storage_key.as_deref(),
+            part_id.as_deref(),
+            size,
+        )
         .await
     {
         tracing::error!(%err, "failed to record upload chunk");
@@ -212,13 +253,11 @@ pub async fn get_chunked_upload_status(
     .into_response()
 }
 
-/// Reassembles every part, in order, into the final stored file - reads
-/// each temporary chunk object back and rewrites it into a fresh
-/// multipart upload, the same `Storage::start_upload`/`write_chunk`
-/// primitives `save_streamed_part` already uses for a single-request
-/// upload. Costs an extra read per chunk over a true server-side
-/// concatenation, but works identically on local disk and S3 without
-/// either backend needing anything beyond `get`/`put`/`delete`.
+/// Turns the received parts into the final stored file. On S3 the parts
+/// already are that file, so this is one call and the hash and thumbnail
+/// follow in the background (`hash_in_background`); that also means no
+/// duplicate notice for these, since the hash isn't known yet. On local
+/// disk the chunk objects get stitched together here instead.
 pub async fn complete_chunked_upload(
     AuthedUser(user): AuthedUser,
     State(state): State<AppState>,
@@ -263,7 +302,6 @@ pub async fn complete_chunked_upload(
         }
     }
 
-    let storage_key = format!("{}/{}", user.id.0, Uuid::new_v4());
     let storage_error = || {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -271,34 +309,27 @@ pub async fn complete_chunked_upload(
         )
     };
 
-    let mut writer = match state.storage.start_upload(&storage_key).await {
-        Ok(writer) => writer,
-        Err(err) => {
-            tracing::error!(%err, "failed to start final upload");
-            return storage_error().into_response();
-        }
-    };
-
-    let mut hasher = Sha256::new();
-    for part in &parts {
-        let bytes = match state.storage.get(&part.storage_key).await {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                tracing::error!(%err, "failed to read upload chunk");
+    let (storage_key, sha256) = match (&upload.storage_key, &upload.multipart_id) {
+        (Some(key), Some(multipart_id)) => {
+            let part_ids = parts
+                .iter()
+                .map(|part| part.part_id.clone().unwrap_or_default())
+                .collect();
+            if let Err(err) = state
+                .storage
+                .complete_parts(key, multipart_id, part_ids)
+                .await
+            {
+                tracing::error!(%err, "failed to complete multipart upload");
                 return storage_error().into_response();
             }
-        };
-        hasher.update(&bytes);
-        if let Err(err) = writer.write_chunk(bytes).await {
-            tracing::error!(%err, "failed to write final upload chunk");
-            return storage_error().into_response();
+            (key.clone(), String::new())
         }
-    }
-
-    if let Err(err) = writer.finish().await {
-        tracing::error!(%err, "failed to finish final upload");
-        return storage_error().into_response();
-    }
+        _ => match stitch_chunks(&state, user.id, &parts).await {
+            Ok(stitched) => stitched,
+            Err(()) => return storage_error().into_response(),
+        },
+    };
 
     let file = File {
         id: FileId::new(),
@@ -307,7 +338,7 @@ pub async fn complete_chunked_upload(
         storage_key,
         content_type: upload.content_type.clone(),
         size_bytes: upload.total_size as u64,
-        sha256: hex::encode(hasher.finalize()),
+        sha256,
         folder_id: None,
         password_hash: None,
         created_at: OffsetDateTime::now_utc(),
@@ -324,20 +355,20 @@ pub async fn complete_chunked_upload(
             .into_response();
     }
 
-    // Thumbnailing needs the whole decoded image, which the streaming
-    // reassembly above deliberately never held onto at once - a single
-    // extra full read here, same tradeoff `save_buffered_part` already
-    // makes for every image, just paid once instead of during each chunk.
-    if file.content_type.starts_with("image/")
-        && file.size_bytes <= super::files::MAX_BUFFERED_IMAGE_BYTES as u64
-    {
+    if file.sha256.is_empty() {
+        tokio::spawn(hash_in_background(state.clone(), file.clone()));
+    } else if is_thumbnailable(&file) {
+        // Thumbnailing needs the whole decoded image, which the stitching
+        // above deliberately never held onto at once - a single extra full
+        // read here, same tradeoff `save_buffered_part` already makes for
+        // every image, just paid once instead of during each chunk.
         if let Ok(bytes) = state.storage.get(&file.storage_key).await {
-            super::files::generate_thumbnail(&state, file.id, bytes).await;
+            generate_thumbnail(&state, file.id, bytes).await;
         }
     }
 
-    for part in &parts {
-        let _ = state.storage.delete(&part.storage_key).await;
+    for key in parts.iter().filter_map(|part| part.storage_key.as_deref()) {
+        let _ = state.storage.delete(key).await;
     }
     if let Err(err) = state.db.delete_chunked_upload(upload.id).await {
         tracing::warn!(%err, "failed to clean up chunked upload record");
@@ -374,11 +405,7 @@ pub async fn cancel_chunked_upload(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    if let Ok(parts) = state.db.list_chunked_upload_parts(upload.id).await {
-        for part in parts {
-            let _ = state.storage.delete(&part.storage_key).await;
-        }
-    }
+    discard_upload_storage(&state, &upload).await;
 
     if let Err(err) = state.db.delete_chunked_upload(upload.id).await {
         tracing::error!(%err, "failed to delete chunked upload");
@@ -388,14 +415,117 @@ pub async fn cancel_chunked_upload(
     StatusCode::NO_CONTENT.into_response()
 }
 
+/// Reads the stitched chunks back in order into a fresh object, hashing
+/// along the way. Only for backends without `Storage::put_part`.
+async fn stitch_chunks(
+    state: &AppState,
+    owner_id: UserId,
+    parts: &[ChunkedUploadPart],
+) -> Result<(String, String), ()> {
+    let storage_key = format!("{}/{}", owner_id.0, Uuid::new_v4());
+    let mut writer = state
+        .storage
+        .start_upload(&storage_key)
+        .await
+        .map_err(|err| {
+            tracing::error!(%err, "failed to start final upload");
+        })?;
+
+    let mut hasher = Sha256::new();
+    for part in parts {
+        let Some(key) = &part.storage_key else {
+            tracing::error!("chunk has no storage key to stitch from");
+            return Err(());
+        };
+        let bytes = state.storage.get(key).await.map_err(|err| {
+            tracing::error!(%err, "failed to read upload chunk");
+        })?;
+        hasher.update(&bytes);
+        writer.write_chunk(bytes).await.map_err(|err| {
+            tracing::error!(%err, "failed to write final upload chunk");
+        })?;
+    }
+
+    writer.finish().await.map_err(|err| {
+        tracing::error!(%err, "failed to finish final upload");
+    })?;
+
+    Ok((storage_key, hex::encode(hasher.finalize())))
+}
+
+fn is_thumbnailable(file: &File) -> bool {
+    file.content_type.starts_with("image/") && file.size_bytes <= MAX_BUFFERED_IMAGE_BYTES as u64
+}
+
+/// Reads a finished upload once to fill in its hash, and its thumbnail
+/// from the same read if it's an image small enough to have one.
+async fn hash_in_background(state: AppState, file: File) {
+    let mut hasher = Sha256::new();
+
+    if is_thumbnailable(&file) {
+        let bytes = match state.storage.get(&file.storage_key).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::error!(%err, file_id = %file.id.0, "failed to read file for hashing");
+                return;
+            }
+        };
+        hasher.update(&bytes);
+        generate_thumbnail(&state, file.id, bytes).await;
+    } else {
+        let mut object = match state.storage.get_stream(&file.storage_key, None).await {
+            Ok(object) => object,
+            Err(err) => {
+                tracing::error!(%err, file_id = %file.id.0, "failed to read file for hashing");
+                return;
+            }
+        };
+        while let Some(chunk) = object.body.next().await {
+            match chunk {
+                Ok(bytes) => hasher.update(&bytes),
+                Err(err) => {
+                    tracing::error!(%err, file_id = %file.id.0, "failed to read file for hashing");
+                    return;
+                }
+            }
+        }
+    }
+
+    let sha256 = hex::encode(hasher.finalize());
+    if let Err(err) = state.db.set_file_sha256(file.id, &sha256).await {
+        tracing::error!(%err, "failed to record file hash");
+    }
+}
+
+/// Throws away whatever an unfinished upload already stored.
+pub(super) async fn discard_upload_storage(state: &AppState, upload: &ChunkedUpload) {
+    if let (Some(key), Some(multipart_id)) = (&upload.storage_key, &upload.multipart_id) {
+        if let Err(err) = state.storage.abort_parts(key, multipart_id).await {
+            tracing::warn!(%err, "failed to abort multipart upload");
+        }
+        return;
+    }
+
+    if let Ok(parts) = state.db.list_chunked_upload_parts(upload.id).await {
+        for key in parts.iter().filter_map(|part| part.storage_key.as_deref()) {
+            let _ = state.storage.delete(key).await;
+        }
+    }
+}
+
 /// Runs forever as a background task, same shape as
 /// `files::run_expiry_sweep`: deletes any chunked upload (and its
 /// already-received chunks) old enough to count as abandoned rather than
-/// merely slow.
+/// merely slow, and finishes hashing any file whose background hash
+/// never got to run to the end.
 pub async fn run_chunked_upload_sweep(state: AppState) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1800));
     loop {
         ticker.tick().await;
+
+        for file in state.db.list_unhashed_files().await.unwrap_or_default() {
+            hash_in_background(state.clone(), file).await;
+        }
 
         let cutoff = OffsetDateTime::now_utc() - ABANDONED_UPLOAD_MAX_AGE;
         let abandoned = match state.db.list_abandoned_chunked_uploads(cutoff).await {
@@ -407,11 +537,7 @@ pub async fn run_chunked_upload_sweep(state: AppState) {
         };
 
         for upload in abandoned {
-            if let Ok(parts) = state.db.list_chunked_upload_parts(upload.id).await {
-                for part in parts {
-                    let _ = state.storage.delete(&part.storage_key).await;
-                }
-            }
+            discard_upload_storage(&state, &upload).await;
             match state.db.delete_chunked_upload(upload.id).await {
                 Ok(()) => {
                     tracing::info!(upload_id = %upload.id.0, "deleted abandoned chunked upload")

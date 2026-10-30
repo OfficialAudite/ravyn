@@ -13,6 +13,8 @@ struct ChunkedUploadRow {
     total_size: i64,
     created_at: OffsetDateTime,
     expires_at: Option<OffsetDateTime>,
+    storage_key: Option<String>,
+    multipart_id: Option<String>,
 }
 
 impl From<ChunkedUploadRow> for ChunkedUpload {
@@ -25,22 +27,27 @@ impl From<ChunkedUploadRow> for ChunkedUpload {
             total_size: row.total_size,
             created_at: row.created_at,
             expires_at: row.expires_at,
+            storage_key: row.storage_key,
+            multipart_id: row.multipart_id,
         }
     }
 }
 
-/// One received chunk, as recorded in `chunked_upload_parts`.
+/// One received chunk, as recorded in `chunked_upload_parts`. Has a
+/// `storage_key` when stored as its own object, a `part_id` when it went
+/// into the upload's multipart upload instead.
 pub struct ChunkedUploadPart {
     pub part_number: i32,
-    pub storage_key: String,
+    pub storage_key: Option<String>,
+    pub part_id: Option<String>,
     pub size_bytes: i64,
 }
 
 impl Db {
     pub async fn create_chunked_upload(&self, upload: &ChunkedUpload) -> Result<(), DbError> {
         sqlx::query(
-            "insert into chunked_uploads (id, owner_id, original_name, content_type, total_size, created_at, expires_at)
-             values ($1, $2, $3, $4, $5, $6, $7)",
+            "insert into chunked_uploads (id, owner_id, original_name, content_type, total_size, created_at, expires_at, storage_key, multipart_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(upload.id.0)
         .bind(upload.owner_id.0)
@@ -49,6 +56,8 @@ impl Db {
         .bind(upload.total_size)
         .bind(upload.created_at)
         .bind(upload.expires_at)
+        .bind(&upload.storage_key)
+        .bind(&upload.multipart_id)
         .execute(&self.pool)
         .await?;
 
@@ -84,18 +93,21 @@ impl Db {
         &self,
         upload_id: ChunkedUploadId,
         part_number: i32,
-        storage_key: &str,
+        storage_key: Option<&str>,
+        part_id: Option<&str>,
         size_bytes: i64,
     ) -> Result<(), DbError> {
         sqlx::query(
-            "insert into chunked_upload_parts (upload_id, part_number, storage_key, size_bytes)
-             values ($1, $2, $3, $4)
+            "insert into chunked_upload_parts (upload_id, part_number, storage_key, part_id, size_bytes)
+             values ($1, $2, $3, $4, $5)
              on conflict (upload_id, part_number)
-             do update set storage_key = excluded.storage_key, size_bytes = excluded.size_bytes",
+             do update set storage_key = excluded.storage_key, part_id = excluded.part_id,
+                 size_bytes = excluded.size_bytes",
         )
         .bind(upload_id.0)
         .bind(part_number)
         .bind(storage_key)
+        .bind(part_id)
         .bind(size_bytes)
         .execute(&self.pool)
         .await?;
@@ -110,12 +122,13 @@ impl Db {
         #[derive(sqlx::FromRow)]
         struct Row {
             part_number: i32,
-            storage_key: String,
+            storage_key: Option<String>,
+            part_id: Option<String>,
             size_bytes: i64,
         }
 
         let rows = sqlx::query_as::<_, Row>(
-            "select part_number, storage_key, size_bytes from chunked_upload_parts
+            "select part_number, storage_key, part_id, size_bytes from chunked_upload_parts
              where upload_id = $1 order by part_number asc",
         )
         .bind(upload_id.0)
@@ -127,6 +140,7 @@ impl Db {
             .map(|row| ChunkedUploadPart {
                 part_number: row.part_number,
                 storage_key: row.storage_key,
+                part_id: row.part_id,
                 size_bytes: row.size_bytes,
             })
             .collect())

@@ -54,6 +54,9 @@ pub struct FileSummary {
 /// `ravyn-api` live on different origins without any CORS setup — the
 /// browser only ever talks to `ravyn-web`.
 #[cfg(feature = "ssr")]
+pub use ssr::http_client;
+
+#[cfg(feature = "ssr")]
 pub(crate) mod ssr {
     use axum::http::{header, HeaderMap, HeaderValue};
     use leptos::prelude::*;

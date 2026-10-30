@@ -8,18 +8,81 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::{stream::BoxStream, StreamExt, TryStreamExt};
-use object_store::{path::Path as ObjectPath, GetOptions, GetRange, ObjectStore, WriteMultipart};
+use object_store::{
+    multipart::{MultipartStore, PartId},
+    path::Path as ObjectPath,
+    GetOptions, GetRange, ObjectStore, WriteMultipart,
+};
 
 #[derive(Clone)]
 pub struct Storage {
     store: Arc<dyn ObjectStore>,
+    multipart: Option<Arc<dyn MultipartStore>>,
 }
 
 impl Storage {
     pub fn new(config: StorageConfig) -> Result<Self, StorageError> {
-        Ok(Self {
-            store: config.build()?,
-        })
+        let (store, multipart) = config.build()?;
+        Ok(Self { store, multipart })
+    }
+
+    /// Starts a multipart upload whose parts can arrive over separate
+    /// requests, in any order. `None` when the backend can't do that
+    /// (local disk), in which case the caller has to stitch the object
+    /// together itself.
+    pub async fn create_parts(&self, key: &str) -> Result<Option<String>, StorageError> {
+        let Some(multipart) = &self.multipart else {
+            return Ok(None);
+        };
+        Ok(Some(
+            multipart.create_multipart(&ObjectPath::from(key)).await?,
+        ))
+    }
+
+    /// `part_number` starts at 1, matching the chunked upload routes.
+    /// Returns the backend's id for the part, needed again by `complete_parts`.
+    pub async fn put_part(
+        &self,
+        key: &str,
+        upload_id: &str,
+        part_number: i32,
+        bytes: Bytes,
+    ) -> Result<String, StorageError> {
+        let multipart = self.multipart.as_ref().ok_or(StorageError::NoMultipart)?;
+        let part = multipart
+            .put_part(
+                &ObjectPath::from(key),
+                &upload_id.to_string(),
+                (part_number - 1) as usize,
+                bytes.into(),
+            )
+            .await?;
+        Ok(part.content_id)
+    }
+
+    pub async fn complete_parts(
+        &self,
+        key: &str,
+        upload_id: &str,
+        part_ids: Vec<String>,
+    ) -> Result<(), StorageError> {
+        let multipart = self.multipart.as_ref().ok_or(StorageError::NoMultipart)?;
+        let parts = part_ids
+            .into_iter()
+            .map(|content_id| PartId { content_id })
+            .collect();
+        multipart
+            .complete_multipart(&ObjectPath::from(key), &upload_id.to_string(), parts)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn abort_parts(&self, key: &str, upload_id: &str) -> Result<(), StorageError> {
+        let multipart = self.multipart.as_ref().ok_or(StorageError::NoMultipart)?;
+        multipart
+            .abort_multipart(&ObjectPath::from(key), &upload_id.to_string())
+            .await?;
+        Ok(())
     }
 
     /// Always uploads via `object_store`'s multipart API, even for small

@@ -135,7 +135,7 @@ impl Db {
         exclude_id: FileId,
     ) -> Result<Option<File>, DbError> {
         let row = sqlx::query_as::<_, FileRow>(
-            "select * from files where owner_id = $1 and sha256 = $2 and id != $3
+            "select * from files where owner_id = $1 and sha256 = $2 and sha256 != '' and id != $3
              order by created_at asc limit 1",
         )
         .bind(owner_id.0)
@@ -246,6 +246,27 @@ impl Db {
         )
         .fetch_all(&self.pool)
         .await?;
+
+        Ok(rows.into_iter().map(File::from).collect())
+    }
+
+    pub async fn set_file_sha256(&self, id: FileId, sha256: &str) -> Result<(), DbError> {
+        sqlx::query("update files set sha256 = $2 where id = $1")
+            .bind(id.0)
+            .bind(sha256)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Files stored before their hash was known (a chunked upload hashes
+    /// in the background) whose hashing never finished, e.g. because the
+    /// server restarted in the middle of it.
+    pub async fn list_unhashed_files(&self) -> Result<Vec<File>, DbError> {
+        let rows = sqlx::query_as::<_, FileRow>("select * from files where sha256 = ''")
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows.into_iter().map(File::from).collect())
     }
