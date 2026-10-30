@@ -179,9 +179,12 @@ pub async fn get_file(
     }
 
     let mut headers = file_response_headers(&file.content_type, &file.original_name);
+    // Empty while a chunked upload is still being hashed in the background.
     let etag = format!("\"{}\"", file.sha256);
-    if let Ok(value) = etag.parse() {
-        headers.insert(header::ETAG, value);
+    if !file.sha256.is_empty() {
+        if let Ok(value) = etag.parse() {
+            headers.insert(header::ETAG, value);
+        }
     }
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     headers.insert(
@@ -189,10 +192,11 @@ pub async fn get_file(
         HeaderValue::from_static("private, no-cache"),
     );
 
-    let not_modified = request_headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.split(',').any(|tag| tag.trim() == etag));
+    let not_modified = !file.sha256.is_empty()
+        && request_headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(',').any(|tag| tag.trim() == etag));
     if not_modified {
         return (StatusCode::NOT_MODIFIED, headers).into_response();
     }

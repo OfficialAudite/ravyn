@@ -2936,6 +2936,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.8.9",
  "axum-extra",
+ "futures",
  "hex",
  "image",
  "img-parts",
@@ -2998,6 +2999,7 @@ dependencies = [
  "axum 0.7.9",
  "base64",
  "console_error_panic_hook",
+ "futures",
  "js-sys",
  "leptos",
  "leptos_axum",

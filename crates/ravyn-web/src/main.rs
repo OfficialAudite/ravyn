@@ -97,7 +97,7 @@ async fn health() -> axum::response::Response {
     let api_base =
         std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
 
-    let request = reqwest::Client::new()
+    let request = ravyn_web::server_fns::http_client()
         .get(format!("{api_base}/health"))
         .timeout(std::time::Duration::from_secs(3))
         .send();
@@ -157,7 +157,7 @@ async fn upload_proxy(
     let api_base =
         std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
 
-    let mut request = reqwest::Client::new()
+    let mut request = ravyn_web::server_fns::http_client()
         .post(format!("{api_base}/files"))
         .body(reqwest::Body::wrap_stream(body.into_data_stream()));
 
@@ -230,7 +230,7 @@ async fn upload_chunk_proxy(
     let api_base =
         std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
 
-    let mut request = reqwest::Client::new()
+    let mut request = ravyn_web::server_fns::http_client()
         .patch(format!("{api_base}/uploads/{id}/{part_number}"))
         .body(reqwest::Body::wrap_stream(body.into_data_stream()));
 
@@ -271,7 +271,8 @@ async fn preview_proxy(
     let api_base =
         std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
 
-    let mut request = reqwest::Client::new().get(format!("{api_base}/files/{id}/thumbnail"));
+    let mut request =
+        ravyn_web::server_fns::http_client().get(format!("{api_base}/files/{id}/thumbnail"));
     if let Some(cookie) = headers
         .get(axum::http::header::COOKIE)
         .and_then(|value| value.to_str().ok())
@@ -320,7 +321,7 @@ async fn raw_proxy(
     let api_base =
         std::env::var("RAVYN_API_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".into());
 
-    let mut request = reqwest::Client::new().get(format!("{api_base}/files/{id}"));
+    let mut request = ravyn_web::server_fns::http_client().get(format!("{api_base}/files/{id}"));
     for name in [
         axum::http::header::COOKIE,
         axum::http::header::RANGE,
