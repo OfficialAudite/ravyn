@@ -272,7 +272,7 @@ async fn upload_one_large_file(
             const MAX_ATTEMPTS: u8 = 3;
             let mut attempt = 0;
             loop {
-                match upload_one_chunk(upload_id, part_number, &blob).await {
+                match upload_one_chunk(upload_id, part_number, &blob, progress).await {
                     Ok(()) => break,
                     Err(err) => {
                         attempt += 1;
@@ -284,7 +284,6 @@ async fn upload_one_large_file(
                 }
             }
 
-            progress.update(|(sent, _)| *sent += end - start);
             Ok(())
         })
         .await?;
@@ -296,38 +295,60 @@ async fn upload_one_large_file(
     Ok(completed.duplicate_of)
 }
 
+/// XHR rather than fetch, since fetch has no upload progress events and
+/// the bar would otherwise only move once a whole chunk has landed. Bytes
+/// are counted into `progress` as they go out, and taken back out again if
+/// the attempt fails so a retry doesn't count them twice.
 #[cfg(feature = "hydrate")]
 async fn upload_one_chunk(
     upload_id: &str,
     part_number: i32,
     blob: &web_sys::Blob,
+    progress: RwSignal<(u64, u64)>,
 ) -> Result<(), String> {
-    use wasm_bindgen::JsCast;
+    use std::{cell::Cell, rc::Rc};
+    use wasm_bindgen::{closure::Closure, JsCast};
 
-    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
-    let url = format!("/upload-chunk/{upload_id}/{part_number}");
+    let xhr =
+        web_sys::XmlHttpRequest::new().map_err(|_| "failed to start the upload".to_string())?;
+    xhr.open("PATCH", &format!("/upload-chunk/{upload_id}/{part_number}"))
+        .map_err(|_| "failed to start the upload".to_string())?;
 
-    let init = web_sys::RequestInit::new();
-    init.set_method("PATCH");
-    init.set_body(blob);
+    let counted = Rc::new(Cell::new(0u64));
+    let on_progress = {
+        let counted = counted.clone();
+        Closure::<dyn FnMut(web_sys::ProgressEvent)>::new(move |event: web_sys::ProgressEvent| {
+            let loaded = event.loaded() as u64;
+            let delta = loaded.saturating_sub(counted.get());
+            counted.set(loaded);
+            progress.update(|(sent, _)| *sent += delta);
+        })
+    };
+    if let Ok(upload) = xhr.upload() {
+        upload.set_onprogress(Some(on_progress.as_ref().unchecked_ref()));
+    }
 
-    let request = web_sys::Request::new_with_str_and_init(&url, &init)
-        .map_err(|_| "failed to build the upload request".to_string())?;
+    let done = js_sys::Promise::new(&mut |resolve, reject| {
+        xhr.set_onload(Some(&resolve));
+        xhr.set_onerror(Some(&reject));
+        xhr.set_onabort(Some(&reject));
+    });
+    let sent = xhr.send_with_opt_blob(Some(blob));
+    let finished = sent.is_ok() && wasm_bindgen_futures::JsFuture::from(done).await.is_ok();
+    drop(on_progress);
 
-    let response_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|_| "network error".to_string())?;
-    let response: web_sys::Response = response_value
-        .dyn_into()
-        .map_err(|_| "unexpected response".to_string())?;
+    let status = xhr.status().unwrap_or(0);
+    if finished && (200..300).contains(&status) {
+        let rest = blob.size() as u64 - counted.get().min(blob.size() as u64);
+        progress.update(|(sent, _)| *sent += rest);
+        return Ok(());
+    }
 
-    if response.ok() {
-        Ok(())
+    progress.update(|(sent, _)| *sent = sent.saturating_sub(counted.get()));
+    if finished {
+        Err(format!("server rejected the chunk (status {status})"))
     } else {
-        Err(format!(
-            "server rejected the chunk (status {})",
-            response.status()
-        ))
+        Err("network error".to_string())
     }
 }
 
